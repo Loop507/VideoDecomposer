@@ -1,2 +1,4 @@
 ffmpeg
 imagemagick
+libsm6
+libxext6

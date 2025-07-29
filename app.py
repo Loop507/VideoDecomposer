@@ -1,6 +1,5 @@
 import random
 import os
-import shutil
 import tempfile
 from datetime import timedelta
 import streamlit as st
@@ -13,125 +12,191 @@ except ImportError:
     st.warning("⚠️ MoviePy non è installato. Funzionerà solo la simulazione.")
 
 
-class VideoShuffler:
+class MultiVideoShuffler:
     def __init__(self):
-        self.segments = []
+        self.video_segments = {}  # Dict: video_id -> list of segments
+        self.all_segments = []    # Lista di tutti i segmenti con info video
         self.shuffled_order = []
 
     def format_duration(self, seconds):
         return str(timedelta(seconds=round(seconds)))
 
-    def calculate_segments(self, total_duration, segment_duration):
+    def add_video(self, video_id, video_name, total_duration, segment_duration):
+        """Aggiunge i segmenti di un video alla collezione"""
         num_segments = int(total_duration // segment_duration)
         remaining = total_duration % segment_duration
-        self.segments = []
+        segments = []
 
         for i in range(num_segments):
             start = i * segment_duration
             end = min(start + segment_duration, total_duration)
-            self.segments.append({'id': i + 1, 'start': start, 'end': end, 'duration': end - start})
+            segment = {
+                'video_id': video_id,
+                'video_name': video_name,
+                'segment_id': i + 1,
+                'start': start,
+                'end': end,
+                'duration': end - start,
+                'global_id': f"{video_id}_S{i + 1}"
+            }
+            segments.append(segment)
+            self.all_segments.append(segment)
 
-        # Aggiungi l'ultimo segmento se c'è un resto significativo (almeno 0.5 secondi)
+        # Aggiungi l'ultimo segmento se c'è un resto significativo
         if remaining > 0.5:
             start = num_segments * segment_duration
-            self.segments.append({'id': num_segments + 1, 'start': start, 'end': total_duration, 'duration': remaining})
+            segment = {
+                'video_id': video_id,
+                'video_name': video_name,
+                'segment_id': num_segments + 1,
+                'start': start,
+                'end': total_duration,
+                'duration': remaining,
+                'global_id': f"{video_id}_S{num_segments + 1}"
+            }
+            segments.append(segment)
+            self.all_segments.append(segment)
 
-        return len(self.segments)
+        self.video_segments[video_id] = segments
+        return len(segments)
 
-    def shuffle_segments(self, seed=None):
+    def shuffle_all_segments(self, seed=None, mix_ratio=0.5):
+        """
+        Mescola tutti i segmenti di tutti i video
+        mix_ratio: 0.5 = bilanciato, 0.7 = più segmenti del primo video, etc.
+        """
         if seed:
             random.seed(seed)
-        self.shuffled_order = list(range(len(self.segments)))
-        random.shuffle(self.shuffled_order)
+        
+        # Se abbiamo due video, possiamo bilanciare la distribuzione
+        if len(self.video_segments) == 2:
+            video_ids = list(self.video_segments.keys())
+            video1_segments = [s for s in self.all_segments if s['video_id'] == video_ids[0]]
+            video2_segments = [s for s in self.all_segments if s['video_id'] == video_ids[1]]
+            
+            # Crea una lista bilanciata
+            balanced_segments = []
+            max_len = max(len(video1_segments), len(video2_segments))
+            
+            for i in range(max_len):
+                # Alterna i segmenti in base al mix_ratio
+                if random.random() < mix_ratio and i < len(video1_segments):
+                    balanced_segments.append(video1_segments[i])
+                if i < len(video2_segments):
+                    balanced_segments.append(video2_segments[i])
+                if random.random() >= mix_ratio and i < len(video1_segments):
+                    balanced_segments.append(video1_segments[i])
+            
+            # Mescola la lista bilanciata
+            random.shuffle(balanced_segments)
+            self.shuffled_order = balanced_segments
+        else:
+            # Mescola semplicemente tutti i segmenti
+            self.shuffled_order = self.all_segments.copy()
+            random.shuffle(self.shuffled_order)
 
     def generate_schedule(self):
         schedule = []
         current_time = 0
-        schedule.append("📋 SCALETTA VIDEO RIMESCOLATO\n")
-        schedule.append(f"🔀 Ordine originale: {[s['id'] for s in self.segments]}")
-        schedule.append(f"🎲 Ordine mescolato: {[self.segments[i]['id'] for i in self.shuffled_order]}\n")
-
-        for i, segment_idx in enumerate(self.shuffled_order):
-            s = self.segments[segment_idx]
+        schedule.append("📋 SCALETTA VIDEO MULTI-MIX\n")
+        
+        # Mostra statistiche per video
+        video_stats = {}
+        for segment in self.shuffled_order:
+            video_id = segment['video_id']
+            if video_id not in video_stats:
+                video_stats[video_id] = {'count': 0, 'total_duration': 0}
+            video_stats[video_id]['count'] += 1
+            video_stats[video_id]['total_duration'] += segment['duration']
+        
+        schedule.append("📊 STATISTICHE:")
+        for video_id, stats in video_stats.items():
+            video_name = self.shuffled_order[0]['video_name'] if video_id == self.shuffled_order[0]['video_id'] else [s['video_name'] for s in self.shuffled_order if s['video_id'] == video_id][0]
+            schedule.append(f"   🎬 {video_name}: {stats['count']} segmenti, {self.format_duration(stats['total_duration'])}")
+        
+        schedule.append("\n🎵 SEQUENZA FINALE:")
+        
+        for i, segment in enumerate(self.shuffled_order):
             schedule.append(
-                f"🎬 Posizione {i+1}: Segmento #{s['id']} | "
-                f"Originale: {self.format_duration(s['start'])}–{self.format_duration(s['end'])} → "
-                f"Nuova posizione: {self.format_duration(current_time)}–{self.format_duration(current_time + s['duration'])}"
+                f"🎬 Pos {i+1:2d}: [{segment['video_name']}] Segmento #{segment['segment_id']} | "
+                f"{self.format_duration(segment['start'])}–{self.format_duration(segment['end'])} → "
+                f"{self.format_duration(current_time)}–{self.format_duration(current_time + segment['duration'])}"
             )
-            current_time += s['duration']
+            current_time += segment['duration']
 
         schedule.append(f"\n⏱️ DURATA TOTALE: {self.format_duration(current_time)}")
         return "\n".join(schedule)
 
-    def process_video(self, input_path, output_path, progress_callback=None):
+    def process_videos(self, video_paths, output_path, progress_callback=None):
         if not MOVIEPY_AVAILABLE:
             return False, "❌ MoviePy non disponibile."
 
-        if not os.path.exists(input_path):
-            return False, f"❌ File non trovato: {input_path}"
+        # Verifica che tutti i file esistano
+        for video_id, path in video_paths.items():
+            if not os.path.exists(path):
+                return False, f"❌ File non trovato: {path}"
 
-        video = None
+        video_clips = {}
         clips = []
         final_video = None
 
         try:
+            # Carica tutti i video
             if progress_callback:
                 progress_callback("Caricamento video...")
-            
-            video = VideoFileClip(input_path)
-            
+                
+            for video_id, path in video_paths.items():
+                video_clips[video_id] = VideoFileClip(path)
+                
             if progress_callback:
                 progress_callback("Estrazione segmenti nell'ordine mescolato...")
             
-            # DEBUG: Stampa l'ordine dei segmenti
-            print(f"Ordine originale: {list(range(len(self.segments)))}")
-            print(f"Ordine mescolato: {self.shuffled_order}")
-            
-            # Estrai i segmenti NELL'ORDINE MESCOLATO
-            for i, segment_idx in enumerate(self.shuffled_order):
-                s = self.segments[segment_idx]
+            # Estrai i segmenti nell'ordine mescolato
+            for i, segment in enumerate(self.shuffled_order):
+                video_id = segment['video_id']
+                video = video_clips[video_id]
                 
                 # Verifica che i tempi siano validi
-                if s['start'] >= video.duration:
-                    print(f"Segmento {s['id']} saltato: start >= durata video")
+                if segment['start'] >= video.duration:
+                    print(f"Segmento {segment['global_id']} saltato: start >= durata video")
                     continue
                     
                 # Assicurati che end non superi la durata del video
-                end_time = min(s['end'], video.duration)
-                if s['start'] >= end_time:
-                    print(f"Segmento {s['id']} saltato: start >= end")
+                end_time = min(segment['end'], video.duration)
+                if segment['start'] >= end_time:
+                    print(f"Segmento {segment['global_id']} saltato: start >= end")
                     continue
                 
                 # Crea il subclip
                 try:
-                    print(f"Estraendo segmento #{s['id']} dalla posizione {i+1}: {s['start']:.2f}s - {end_time:.2f}s")
-                    clip = video.subclip(s['start'], end_time)
+                    print(f"Estraendo [{segment['video_name']}] Segmento #{segment['segment_id']} dalla posizione {i+1}: {segment['start']:.2f}s - {end_time:.2f}s")
+                    clip = video.subclip(segment['start'], end_time)
                     clips.append(clip)
                     
                     if progress_callback:
-                        progress_callback(f"Estratto segmento #{s['id']} alla posizione {i+1}/{len(self.shuffled_order)}")
+                        progress_callback(f"Estratto [{segment['video_name']}] Segm. #{segment['segment_id']} ({i+1}/{len(self.shuffled_order)})")
                         
                 except Exception as e:
-                    print(f"Errore nell'estrazione del segmento {s['id']}: {e}")
+                    print(f"Errore nell'estrazione del segmento {segment['global_id']}: {e}")
                     if progress_callback:
-                        progress_callback(f"Errore segmento #{s['id']}: {e}")
+                        progress_callback(f"Errore segmento {segment['global_id']}: {e}")
                     continue
 
             if not clips:
-                return False, "❌ Nessun segmento valido estratto dal video."
+                return False, "❌ Nessun segmento valido estratto dai video."
 
             print(f"Totale clip estratti: {len(clips)}")
             
             if progress_callback:
                 progress_callback(f"Concatenazione di {len(clips)} segmenti mescolati...")
 
-            # Concatena i clip NELL'ORDINE IN CUI SONO STATI AGGIUNTI (che è l'ordine mescolato)
+            # Concatena i clip nell'ordine mescolato
             final_video = concatenate_videoclips(clips, method="compose")
             
             if progress_callback:
                 progress_callback("Salvataggio video finale...")
 
-            # Scrivi il video finale con parametri ottimizzati
+            # Scrivi il video finale
             final_video.write_videofile(
                 output_path,
                 codec='libx264',
@@ -142,7 +207,7 @@ class VideoShuffler:
                 logger=None
             )
 
-            print(f"Video finale salvato: {output_path}")
+            print(f"Video finale multi-mix salvato: {output_path}")
             return True, output_path
 
         except Exception as e:
@@ -152,8 +217,9 @@ class VideoShuffler:
         finally:
             # Pulizia memoria
             try:
-                if video:
-                    video.close()
+                for video in video_clips.values():
+                    if video:
+                        video.close()
                 if final_video:
                     final_video.close()
                 for clip in clips:
@@ -164,8 +230,9 @@ class VideoShuffler:
 
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="VideoDecomposer by loop507", layout="wide")
-st.title("🎬 VideoDecomposer by loop507")
+st.set_page_config(page_title="VideoDecomposer Multi-Mix by loop507", layout="wide")
+st.title("🎬 VideoDecomposer Multi-Mix by loop507")
+st.subheader("🔀 Mescola segmenti da più video!")
 
 # Inizializza session state
 if 'processed_video' not in st.session_state:
@@ -173,103 +240,79 @@ if 'processed_video' not in st.session_state:
 if 'output_path' not in st.session_state:
     st.session_state.output_path = None
 
-uploaded_video = st.file_uploader("📤 Carica file video", type=["mp4", "mov", "avi", "mkv"])
+# Scelta modalità
+mode = st.radio(
+    "🎯 Scegli modalità:",
+    ["🎬 Single Video (classico)", "🎭 Multi Video Mix"],
+    horizontal=True
+)
 
-if uploaded_video:
-    # Crea directory temporanea se non esiste
-    temp_dir = tempfile.gettempdir()
-    input_path = os.path.join(temp_dir, uploaded_video.name)
+if mode == "🎬 Single Video (classico)":
+    # Modalità singolo video (codice originale semplificato)
+    uploaded_video = st.file_uploader("📤 Carica file video", type=["mp4", "mov", "avi", "mkv"])
     
-    # Salva il file caricato
-    with open(input_path, "wb") as f:
-        f.write(uploaded_video.read())
+    if uploaded_video:
+        temp_dir = tempfile.gettempdir()
+        input_path = os.path.join(temp_dir, uploaded_video.name)
+        
+        with open(input_path, "wb") as f:
+            f.write(uploaded_video.read())
 
-    try:
-        # Leggi informazioni video
-        if MOVIEPY_AVAILABLE:
-            clip = VideoFileClip(input_path)
-            total_duration = clip.duration
-            clip.close()
-        else:
-            total_duration = 60  # Valore di default per simulazione
-            
-        st.video(uploaded_video)
-        st.success(f"✅ Video caricato - Durata: {round(total_duration, 2)} secondi")
-
-        # Form per i parametri
-        with st.form("params_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                segment_input = st.text_input("✂️ Durata segmenti (secondi)", "3")
+        try:
+            if MOVIEPY_AVAILABLE:
+                clip = VideoFileClip(input_path)
+                total_duration = clip.duration
+                clip.close()
+            else:
+                total_duration = 60
                 
-            with col2:
-                seed_input = st.text_input("🎲 Seed per randomizzazione (opzionale)", "")
-            
-            submitted = st.form_submit_button("🚀 Avvia elaborazione", use_container_width=True)
+            st.video(uploaded_video)
+            st.success(f"✅ Video caricato - Durata: {round(total_duration, 2)} secondi")
 
-        if submitted:
-            try:
-                segment_duration = float(segment_input)
+            with st.form("single_params_form"):
+                col1, col2 = st.columns(2)
                 
-                if segment_duration <= 0:
-                    st.error("❌ La durata del segmento deve essere positiva.")
-                elif segment_duration >= total_duration:
-                    st.error("❌ La durata del segmento deve essere minore della durata totale del video.")
-                else:
-                    # Inizializza lo shuffler
-                    shuffler = VideoShuffler()
-                    num_segments = shuffler.calculate_segments(total_duration, segment_duration)
-                    
-                    # Imposta seed se fornito
-                    seed = int(seed_input) if seed_input.isdigit() else None
-                    shuffler.shuffle_segments(seed)
+                with col1:
+                    segment_input = st.text_input("✂️ Durata segmenti (secondi)", "3")
+                with col2:
+                    seed_input = st.text_input("🎲 Seed (opzionale)", "")
+                
+                submitted = st.form_submit_button("🚀 Avvia elaborazione", use_container_width=True)
 
-                    # Verifica che il mescolamento sia avvenuto
-                    original_order = list(range(len(shuffler.segments)))
-                    is_shuffled = shuffler.shuffled_order != original_order
+            if submitted:
+                try:
+                    segment_duration = float(segment_input)
                     
-                    if not is_shuffled:
-                        st.warning("⚠️ L'ordine dei segmenti non è cambiato. Prova un seed diverso o lascia vuoto per casualità.")
+                    if segment_duration <= 0 or segment_duration >= total_duration:
+                        st.error("❌ Durata segmento non valida.")
                     else:
-                        st.success(f"✅ Segmenti mescolati correttamente!")
+                        shuffler = MultiVideoShuffler()
+                        shuffler.add_video("V1", uploaded_video.name, total_duration, segment_duration)
+                        
+                        seed = int(seed_input) if seed_input.isdigit() else None
+                        shuffler.shuffle_all_segments(seed)
 
-                    # Mostra la scaletta
-                    st.subheader("📋 Scaletta generata")
-                    st.code(shuffler.generate_schedule())
-                    
-                    st.info(f"📊 Generati {num_segments} segmenti - Mescolamento: {'SÌ' if is_shuffled else 'NO'}")
+                        st.subheader("📋 Scaletta generata")
+                        st.code(shuffler.generate_schedule())
 
-                    if MOVIEPY_AVAILABLE:
-                        # Elabora il video
-                        output_filename = f"remix_{uploaded_video.name}"
-                        output_path = os.path.join(temp_dir, output_filename)
-                        
-                        # Progress bar e status
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        
-                        def progress_callback(message):
-                            status_text.text(f"🎞️ {message}")
-                        
-                        with st.spinner("🎞️ Elaborazione in corso..."):
-                            success, result = shuffler.process_video(input_path, output_path, progress_callback)
+                        if MOVIEPY_AVAILABLE:
+                            output_filename = f"remix_{uploaded_video.name}"
+                            output_path = os.path.join(temp_dir, output_filename)
                             
-                        progress_bar.progress(100)
-                        
-                        if success:
-                            st.success("✅ Video remixato completato!")
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
                             
-                            # Salva nel session state
-                            st.session_state.processed_video = result
-                            st.session_state.output_path = output_path
+                            def progress_callback(message):
+                                status_text.text(f"🎞️ {message}")
                             
-                            # Mostra anteprima del risultato
-                            if os.path.exists(result):
-                                file_size = os.path.getsize(result) / (1024 * 1024)  # MB
-                                st.info(f"📁 File generato: {file_size:.2f} MB")
+                            video_paths = {"V1": input_path}
+                            success, result = shuffler.process_videos(video_paths, output_path, progress_callback)
+                            
+                            progress_bar.progress(100)
+                            
+                            if success:
+                                st.success("✅ Video remixato completato!")
                                 
-                                # Pulsante download
                                 with open(result, "rb") as f:
                                     st.download_button(
                                         "⬇️ Scarica video remixato",
@@ -279,39 +322,178 @@ if uploaded_video:
                                         use_container_width=True
                                     )
                             else:
-                                st.error("❌ File di output non trovato dopo l'elaborazione.")
+                                st.error(f"❌ {result}")
+                                
+                            status_text.empty()
                         else:
-                            st.error(f"❌ Errore durante l'elaborazione: {result}")
+                            st.warning("⚠️ MoviePy non disponibile - Solo simulazione")
                             
-                        status_text.empty()
-                    else:
-                        st.warning("⚠️ MoviePy non disponibile - Solo simulazione completata")
-                        
-            except ValueError:
-                st.error("❌ Inserisci valori numerici validi.")
-            except Exception as e:
-                st.error(f"❌ Errore imprevisto: {str(e)}")
-                
-    except Exception as e:
-        st.error(f"❌ Errore durante la lettura del video: {str(e)}")
-        
-else:
-    st.info("📂 Carica un video per iniziare l'elaborazione.")
-    
-    # Istruzioni
-    with st.expander("ℹ️ Come funziona"):
-        st.markdown("""
-        **VideoDecomposer** divide il tuo video in segmenti di durata uguale e li rimescola casualmente:
-        
-        1. **Carica** un file video (MP4, MOV, AVI, MKV)
-        2. **Imposta** la durata dei segmenti (es. 3 secondi)
-        3. **Opzionale**: Inserisci un seed per risultati riproducibili
-        4. **Scarica** il video remixato
-        
-        💡 **Suggerimento**: Usa segmenti più corti (1-5 secondi) per risultati più dinamici!
-        """)
+                except ValueError:
+                    st.error("❌ Inserisci valori numerici validi.")
+                except Exception as e:
+                    st.error(f"❌ Errore: {str(e)}")
+                    
+        except Exception as e:
+            st.error(f"❌ Errore lettura video: {str(e)}")
 
-# Pulizia file temporanei alla chiusura
+else:
+    # Modalità multi-video
+    st.markdown("### 🎭 Carica i tuoi video per il mix")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🎬 Video 1")
+        video1 = st.file_uploader("📤 Primo video", type=["mp4", "mov", "avi", "mkv"], key="video1")
+        
+    with col2:
+        st.markdown("#### 🎬 Video 2")
+        video2 = st.file_uploader("📤 Secondo video", type=["mp4", "mov", "avi", "mkv"], key="video2")
+
+    if video1 and video2:
+        temp_dir = tempfile.gettempdir()
+        video1_path = os.path.join(temp_dir, f"v1_{video1.name}")
+        video2_path = os.path.join(temp_dir, f"v2_{video2.name}")
+        
+        # Salva i file
+        with open(video1_path, "wb") as f:
+            f.write(video1.read())
+        with open(video2_path, "wb") as f:
+            f.write(video2.read())
+
+        try:
+            # Leggi informazioni video
+            if MOVIEPY_AVAILABLE:
+                clip1 = VideoFileClip(video1_path)
+                clip2 = VideoFileClip(video2_path)
+                duration1 = clip1.duration
+                duration2 = clip2.duration
+                clip1.close()
+                clip2.close()
+            else:
+                duration1 = duration2 = 60
+                
+            # Mostra anteprime
+            col1, col2 = st.columns(2)
+            with col1:
+                st.video(video1)
+                st.info(f"📏 Durata: {round(duration1, 2)}s")
+            with col2:
+                st.video(video2)
+                st.info(f"📏 Durata: {round(duration2, 2)}s")
+
+            with st.form("multi_params_form"):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    segment_input = st.text_input("✂️ Durata segmenti (secondi)", "3")
+                with col2:
+                    mix_ratio = st.slider("⚖️ Bilancio Video 1/Video 2", 0.1, 0.9, 0.5, 0.1)
+                with col3:
+                    seed_input = st.text_input("🎲 Seed (opzionale)", "")
+                
+                st.markdown(f"**Mix Ratio:** {mix_ratio:.1f} = {int(mix_ratio*100)}% Video 1, {int((1-mix_ratio)*100)}% Video 2")
+                
+                submitted = st.form_submit_button("🎭 Crea Multi-Mix", use_container_width=True)
+
+            if submitted:
+                try:
+                    segment_duration = float(segment_input)
+                    
+                    if segment_duration <= 0:
+                        st.error("❌ Durata segmento deve essere positiva.")
+                    else:
+                        shuffler = MultiVideoShuffler()
+                        
+                        # Aggiungi entrambi i video
+                        num_seg1 = shuffler.add_video("V1", video1.name, duration1, segment_duration)
+                        num_seg2 = shuffler.add_video("V2", video2.name, duration2, segment_duration)
+                        
+                        seed = int(seed_input) if seed_input.isdigit() else None
+                        shuffler.shuffle_all_segments(seed, mix_ratio)
+
+                        st.subheader("📋 Scaletta Multi-Mix generata")
+                        st.code(shuffler.generate_schedule())
+                        
+                        st.success(f"✅ Mescolati {num_seg1 + num_seg2} segmenti totali ({num_seg1} + {num_seg2})")
+
+                        if MOVIEPY_AVAILABLE:
+                            output_filename = f"multimix_{video1.name.split('.')[0]}_{video2.name.split('.')[0]}.mp4"
+                            output_path = os.path.join(temp_dir, output_filename)
+                            
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            
+                            def progress_callback(message):
+                                status_text.text(f"🎭 {message}")
+                            
+                            video_paths = {"V1": video1_path, "V2": video2_path}
+                            
+                            with st.spinner("🎭 Creazione Multi-Mix in corso..."):
+                                success, result = shuffler.process_videos(video_paths, output_path, progress_callback)
+                            
+                            progress_bar.progress(100)
+                            
+                            if success:
+                                st.success("✅ Multi-Mix completato!")
+                                
+                                if os.path.exists(result):
+                                    file_size = os.path.getsize(result) / (1024 * 1024)
+                                    st.info(f"📁 File generato: {file_size:.2f} MB")
+                                    
+                                    with open(result, "rb") as f:
+                                        st.download_button(
+                                            "⬇️ Scarica Multi-Mix",
+                                            f.read(),
+                                            file_name=output_filename,
+                                            mime="video/mp4",
+                                            use_container_width=True
+                                        )
+                                else:
+                                    st.error("❌ File di output non trovato.")
+                            else:
+                                st.error(f"❌ {result}")
+                                
+                            status_text.empty()
+                        else:
+                            st.warning("⚠️ MoviePy non disponibile - Solo simulazione")
+                            
+                except ValueError:
+                    st.error("❌ Inserisci valori numerici validi.")
+                except Exception as e:
+                    st.error(f"❌ Errore: {str(e)}")
+                    
+        except Exception as e:
+            st.error(f"❌ Errore lettura video: {str(e)}")
+    
+    elif video1 or video2:
+        st.info("📂 Carica entrambi i video per procedere con il Multi-Mix.")
+    else:
+        st.info("📂 Carica due video per creare un Multi-Mix!")
+
+# Istruzioni
+with st.expander("ℹ️ Come funziona il Multi-Mix"):
+    st.markdown("""
+    **VideoDecomposer Multi-Mix** ti permette di:
+    
+    ### 🎬 Modalità Single Video:
+    - Stessa funzionalità della versione originale
+    - Divide un video in segmenti e li rimescola
+    
+    ### 🎭 Modalità Multi-Mix:
+    - **Carica 2 video** diversi
+    - **Imposta durata segmenti** (es. 3 secondi)
+    - **Bilancia il mix** con lo slider (0.5 = bilanciato)
+    - **Ottieni un video finale** con segmenti alternati dai due video!
+    
+    💡 **Suggerimenti:**
+    - Usa video con durate simili per risultati migliori
+    - Mix ratio 0.3 = più Video 2, 0.7 = più Video 1
+    - Segmenti corti (1-3s) per transizioni dinamiche
+    - Usa seed per risultati riproducibili
+    """)
+
+# Pulizia file temporanei
 if st.session_state.get('output_path') and os.path.exists(st.session_state.output_path):
     if st.button("🗑️ Pulisci file temporanei"):
         try:

@@ -48,13 +48,15 @@ class VideoShuffler:
         schedule = []
         current_time = 0
         schedule.append("📋 SCALETTA VIDEO RIMESCOLATO\n")
+        schedule.append(f"🔀 Ordine originale: {[s['id'] for s in self.segments]}")
+        schedule.append(f"🎲 Ordine mescolato: {[self.segments[i]['id'] for i in self.shuffled_order]}\n")
 
         for i, segment_idx in enumerate(self.shuffled_order):
             s = self.segments[segment_idx]
             schedule.append(
                 f"🎬 Posizione {i+1}: Segmento #{s['id']} | "
-                f"{self.format_duration(s['start'])}–{self.format_duration(s['end'])} → "
-                f"Nuovo tempo: {self.format_duration(current_time)}–{self.format_duration(current_time + s['duration'])}"
+                f"Originale: {self.format_duration(s['start'])}–{self.format_duration(s['end'])} → "
+                f"Nuova posizione: {self.format_duration(current_time)}–{self.format_duration(current_time + s['duration'])}"
             )
             current_time += s['duration']
 
@@ -79,40 +81,51 @@ class VideoShuffler:
             video = VideoFileClip(input_path)
             
             if progress_callback:
-                progress_callback("Estrazione segmenti...")
+                progress_callback("Estrazione segmenti nell'ordine mescolato...")
             
-            # Estrai i segmenti
-            for i, idx in enumerate(self.shuffled_order):
-                s = self.segments[idx]
+            # DEBUG: Stampa l'ordine dei segmenti
+            print(f"Ordine originale: {list(range(len(self.segments)))}")
+            print(f"Ordine mescolato: {self.shuffled_order}")
+            
+            # Estrai i segmenti NELL'ORDINE MESCOLATO
+            for i, segment_idx in enumerate(self.shuffled_order):
+                s = self.segments[segment_idx]
                 
                 # Verifica che i tempi siano validi
                 if s['start'] >= video.duration:
+                    print(f"Segmento {s['id']} saltato: start >= durata video")
                     continue
                     
                 # Assicurati che end non superi la durata del video
                 end_time = min(s['end'], video.duration)
                 if s['start'] >= end_time:
+                    print(f"Segmento {s['id']} saltato: start >= end")
                     continue
                 
                 # Crea il subclip
                 try:
+                    print(f"Estraendo segmento #{s['id']} dalla posizione {i+1}: {s['start']:.2f}s - {end_time:.2f}s")
                     clip = video.subclip(s['start'], end_time)
                     clips.append(clip)
                     
                     if progress_callback:
-                        progress_callback(f"Segmento {i+1}/{len(self.shuffled_order)} estratto")
+                        progress_callback(f"Estratto segmento #{s['id']} alla posizione {i+1}/{len(self.shuffled_order)}")
                         
                 except Exception as e:
-                    st.warning(f"Errore nell'estrazione del segmento {s['id']}: {e}")
+                    print(f"Errore nell'estrazione del segmento {s['id']}: {e}")
+                    if progress_callback:
+                        progress_callback(f"Errore segmento #{s['id']}: {e}")
                     continue
 
             if not clips:
                 return False, "❌ Nessun segmento valido estratto dal video."
 
+            print(f"Totale clip estratti: {len(clips)}")
+            
             if progress_callback:
-                progress_callback("Concatenazione segmenti...")
+                progress_callback(f"Concatenazione di {len(clips)} segmenti mescolati...")
 
-            # Concatena i clip
+            # Concatena i clip NELL'ORDINE IN CUI SONO STATI AGGIUNTI (che è l'ordine mescolato)
             final_video = concatenate_videoclips(clips, method="compose")
             
             if progress_callback:
@@ -129,9 +142,11 @@ class VideoShuffler:
                 logger=None
             )
 
+            print(f"Video finale salvato: {output_path}")
             return True, output_path
 
         except Exception as e:
+            print(f"Errore durante l'elaborazione: {str(e)}")
             return False, f"❌ Errore durante l'elaborazione: {str(e)}"
             
         finally:
@@ -210,11 +225,20 @@ if uploaded_video:
                     seed = int(seed_input) if seed_input.isdigit() else None
                     shuffler.shuffle_segments(seed)
 
+                    # Verifica che il mescolamento sia avvenuto
+                    original_order = list(range(len(shuffler.segments)))
+                    is_shuffled = shuffler.shuffled_order != original_order
+                    
+                    if not is_shuffled:
+                        st.warning("⚠️ L'ordine dei segmenti non è cambiato. Prova un seed diverso o lascia vuoto per casualità.")
+                    else:
+                        st.success(f"✅ Segmenti mescolati correttamente!")
+
                     # Mostra la scaletta
                     st.subheader("📋 Scaletta generata")
                     st.code(shuffler.generate_schedule())
                     
-                    st.info(f"📊 Generati {num_segments} segmenti")
+                    st.info(f"📊 Generati {num_segments} segmenti - Mescolamento: {'SÌ' if is_shuffled else 'NO'}")
 
                     if MOVIEPY_AVAILABLE:
                         # Elabora il video

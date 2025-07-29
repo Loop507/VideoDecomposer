@@ -1,5 +1,6 @@
 import random
 import os
+import shutil
 from datetime import timedelta
 import streamlit as st
 
@@ -76,10 +77,10 @@ class VideoShuffler:
 
     def process_video(self, input_path, output_path):
         if not MOVIEPY_AVAILABLE:
-            return "❌ MoviePy non disponibile."
+            return False, "❌ MoviePy non disponibile."
 
         if not os.path.exists(input_path):
-            return f"❌ File non trovato: {input_path}"
+            return False, f"❌ File non trovato: {input_path}"
 
         try:
             video = VideoFileClip(input_path)
@@ -90,9 +91,9 @@ class VideoShuffler:
             final_video.close()
             for clip in clips:
                 clip.close()
-            return f"✅ Video salvato: {output_path}"
+            return True, output_path
         except Exception as e:
-            return f"❌ Errore: {e}"
+            return False, f"❌ Errore: {e}"
 
 
 # --- STREAMLIT UI ---
@@ -102,16 +103,7 @@ with st.form("params_form"):
     duration_input = st.text_input("⏱️ Durata totale video (es. '5:30' o '330')", "2:00")
     segment_input = st.text_input("✂️ Durata segmenti (es. '30')", "30")
     seed_input = st.text_input("🎲 Seed per randomizzazione (opzionale)", "")
-
-    simulate_only = st.checkbox("Simula senza video reale", value=True)
-
-    input_file = None
-    output_filename = None
-
-    if not simulate_only:
-        input_file = st.text_input("📁 Percorso file video input")
-        output_filename = st.text_input("💾 Nome file output (es. 'output.mp4')", "video_rimescolato.mp4")
-
+    uploaded_video = st.file_uploader("📤 Carica file video", type=["mp4", "mov", "avi", "mkv"])
     submitted = st.form_submit_button("Avvia")
 
 if submitted:
@@ -121,7 +113,7 @@ if submitted:
         segment_duration = shuffler.parse_duration(segment_input)
 
         if segment_duration >= total_duration:
-            st.error("La durata del segmento deve essere minore della durata totale.")
+            st.error("❌ La durata del segmento deve essere minore della durata totale.")
         else:
             shuffler.calculate_segments(total_duration, segment_duration)
             seed = int(seed_input) if seed_input.isdigit() else None
@@ -130,10 +122,22 @@ if submitted:
             st.success("✅ Segmenti creati e rimescolati")
             st.code(shuffler.generate_schedule())
 
-            if simulate_only:
+            if uploaded_video is None:
+                st.info("💡 Nessun video caricato: eseguo solo simulazione.")
                 st.text(shuffler.simulate_processing())
             else:
-                result = shuffler.process_video(input_file, output_filename)
-                st.text(result)
+                with st.spinner("🎞️ Elaborazione video in corso..."):
+                    input_path = f"/tmp/input_{uploaded_video.name}"
+                    output_path = f"/tmp/remixed_{uploaded_video.name}"
+                    with open(input_path, "wb") as f:
+                        f.write(uploaded_video.read())
+
+                    success, result = shuffler.process_video(input_path, output_path)
+                    if success:
+                        st.success("✅ Video remixato creato!")
+                        with open(output_path, "rb") as f:
+                            st.download_button("⬇️ Scarica video remixato", f, file_name=f"remix_{uploaded_video.name}", mime="video/mp4")
+                    else:
+                        st.error(result)
     except Exception as e:
         st.error(f"Errore: {e}")

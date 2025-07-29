@@ -3,13 +3,21 @@ import os
 import sys
 from datetime import timedelta
 
-try:
-    from moviepy.editor import VideoFileClip, concatenate_videoclips
-    MOVIEPY_AVAILABLE = True
-except ImportError:
-    MOVIEPY_AVAILABLE = False
-    print("⚠️  MoviePy non installato. Funzionerà solo la simulazione.")
-    print("   Per processare video reali, installa: pip install moviepy")
+# Import MoviePy solo quando necessario per velocizzare il caricamento
+MOVIEPY_AVAILABLE = False
+
+def load_moviepy():
+    """Carica MoviePy solo quando necessario"""
+    global MOVIEPY_AVAILABLE
+    try:
+        from moviepy.editor import VideoFileClip, concatenate_videoclips
+        MOVIEPY_AVAILABLE = True
+        return VideoFileClip, concatenate_videoclips
+    except ImportError:
+        MOVIEPY_AVAILABLE = False
+        print("⚠️  MoviePy non installato. Funzionerà solo la simulazione.")
+        print("   Per processare video reali, installa: pip install moviepy")
+        return None, None
 
 class VideoShuffler:
     def __init__(self):
@@ -122,6 +130,9 @@ class VideoShuffler:
         
     def process_video(self, input_file, output_file):
         """Processa il video reale usando MoviePy"""
+        print("📦 Caricamento MoviePy...")
+        VideoFileClip, concatenate_videoclips = load_moviepy()
+        
         if not MOVIEPY_AVAILABLE:
             print("❌ MoviePy non disponibile. Uso solo simulazione.")
             self.simulate_processing(input_file, output_file)

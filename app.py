@@ -711,7 +711,7 @@ else:
         st.info("📂 Carica due video per creare un Multi-Mix!")
 
 ---
-### ℹ️ Come funziona il Multi-Mix - AGGIORNATO
+## ℹ️ Come funziona il Multi-Mix - AGGIORNATO
 
 **VideoDecomposer Multi-Mix** ti permette di:
 

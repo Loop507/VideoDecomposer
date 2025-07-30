@@ -1,4 +1,4 @@
 ffmpeg
-libavcodec-dev
-libavformat-dev
-libswscale-dev
+imagemagick
+libsm6
+libxext6

@@ -5,17 +5,11 @@ from datetime import timedelta
 import streamlit as st
 
 try:
-    # MODIFICA QUI: AGGIUNTA 's' a concatenate_videoclip
     from moviepy.editor import VideoFileClip, concatenate_videoclips, CompositeVideoClip
     MOVIEPY_AVAILABLE = True
-except ImportError as e:
+except ImportError:
     MOVIEPY_AVAILABLE = False
-    st.error(f"ATTENZIONE: MoviePy non è disponibile. Errore di importazione: {e}. L'applicazione funzionerà in modalità simulazione.")
-    print(f"LOG ERRORE: MoviePy ImportError - {e}")
-except Exception as e:
-    MOVIEPY_AVAILABLE = False
-    st.error(f"ATTENZIONE: Errore inatteso durante il caricamento di MoviePy: {e}. L'applicazione funzionerà in modalità simulazione.")
-    print(f"LOG ERRORE: MoviePy General Exception - {e}")
+    st.warning("MoviePy non è installato. Funzionerà solo la simulazione.")
 
 
 class MultiVideoShuffler:
@@ -143,8 +137,7 @@ class MultiVideoShuffler:
         try:
             import random
             
-            if not main_clips_sequence:
-                st.info("DEBUG Streamlit: create_artistic_overlay: main_clips_sequence è vuota o None.")
+            if not main_clips_sequence or len(main_clips_sequence) <= 0:
                 print("LOG: Troppo pochi clip principali per creare il video collage. Nessun output.")
                 return None
             
@@ -152,13 +145,11 @@ class MultiVideoShuffler:
             # Assumiamo che tutti i video siano della stessa risoluzione o si adattino bene.
             base_w, base_h = main_clips_sequence[0].size
             print(f"LOG: Dimensione Canvas del video finale: {base_w}x{base_h}")
-            st.info(f"DEBUG Streamlit: create_artistic_overlay avviata. Dimensione Canvas: {base_w}x{base_h}.")
             
             final_clips = []
             current_time = 0 # Tempo corrente nella sequenza del video composito
 
             if not self.video_clips_map:
-                st.info("DEBUG Streamlit: Errore: self.video_clips_map non popolata in create_artistic_overlay.")
                 raise ValueError("LOG: La mappa dei VideoFileClip originali (self.video_clips_map) non è stata popolata.")
 
             # Definizione dei tipi di overlay per il collage
@@ -181,7 +172,6 @@ class MultiVideoShuffler:
                 if progress_callback:
                     progress_callback(f"Collage Artistico: segmento {i+1}/{len(main_clips_sequence)}")
                 
-                st.info(f"DEBUG Streamlit: Inizio elaborazione main_clip #{i+1} (durata: {main_clip.duration:.2f}s).")
                 # --- TRATTAMENTO DEL CLIP "PRINCIPALE" COME ELEMENTO DEL COLLAGE ---
                 # Questo clip sarà l'elemento più prominente per questo intervallo di tempo
                 
@@ -204,33 +194,21 @@ class MultiVideoShuffler:
                 # Può durare per l'intera durata del suo segmento originale
                 primary_clip_duration = main_clip.duration
                 
-                try:
-                    primary_collage_element = (main_clip
-                                               .resize((primary_w, primary_h))
-                                               .set_position((primary_pos_x, primary_pos_y))
-                                               .set_start(current_time)
-                                               .set_opacity(random.uniform(0.8, 1.0))) # Meno trasparente o del tutto opaco
+                primary_collage_element = (main_clip
+                                           .resize((primary_w, primary_h))
+                                           .set_position((primary_pos_x, primary_pos_y))
+                                           .set_start(current_time)
+                                           .set_opacity(random.uniform(0.8, 1.0))) # Meno trasparente o del tutto opaco
 
-                    final_clips.append(primary_collage_element)
-                    st.info(f"DEBUG Streamlit: Aggiunto elemento PRIMARIO del collage. Clip #{i+1}, tempo: {current_time:.2f}s, size: {primary_w}x{primary_h}.")
-                    print(f"LOG: Aggiunto elemento PRIMARIO del collage #{i+1}: ({primary_w}x{primary_h}) at ({primary_pos_x},{primary_pos_y}), start:{current_time:.2f}s, durata:{primary_clip_duration:.2f}s")
-                except Exception as e:
-                    st.error(f"DEBUG Streamlit: Errore nell'aggiungere elemento PRIMARIO del collage: {e}")
-                    print(f"LOG: Errore nell'aggiungere elemento PRIMARIO del collage: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Se il principale fallisce, forse meglio saltare questo giro
-                    current_time += primary_clip_duration # Avanza il tempo per evitare loop infinito
-                    continue # Passa al prossimo main_clip
+                final_clips.append(primary_collage_element)
+                print(f"LOG: Aggiunto elemento PRIMARIO del collage #{i+1}: ({primary_w}x{primary_h}) at ({primary_pos_x},{primary_pos_y}), start:{current_time:.2f}s, durata:{primary_clip_duration:.2f}s")
                 
                 # --- AGGIUNTA DI ELEMENTI DI COLLAGE "SECONDARI" ---
                 if all_segment_dicts:
                     num_secondary_overlays = random.randint(1, 3) # 1-3 elementi secondari per ogni periodo primario
-                    st.info(f"DEBUG Streamlit: Tentativo di aggiungere {num_secondary_overlays} elementi secondari.")
                     print(f"LOG: Tentativo di aggiungere {num_secondary_overlays} elementi secondari per il periodo del clip principale #{i+1}")
                     
                     for overlay_idx in range(num_secondary_overlays):
-                        st.info(f"DEBUG Streamlit: Inizio creazione overlay secondario #{overlay_idx+1}.")
                         try:
                             # Scegli il tipo di overlay per l'elemento secondario
                             choice_weights = [ot[4] for ot in normalized_overlay_types]
@@ -240,22 +218,18 @@ class MultiVideoShuffler:
 
                             # Scegli un segmento CASUALE da TUTTI I SEGMENTI DISPONIBILI
                             source_segment_info = random.choice(all_segment_dicts)
-                            st.info(f"DEBUG Streamlit: Overlay secondario - scelto segmento sorgente: {source_segment_info['global_id']}")
                             
                             # Evita di sovrapporre il clip principale con un overlay dello stesso identico segmento
                             if source_segment_info['global_id'] == self.shuffled_order[i]['global_id']:
                                 potential_source_segment_info = [s for s in all_segment_dicts if s['global_id'] != self.shuffled_order[i]['global_id']]
                                 if potential_source_segment_info:
                                     source_segment_info = random.choice(potential_source_segment_info)
-                                    st.info(f"DEBUG Streamlit: Overlay secondario - ri-scelto segmento sorgente per evitare duplicato: {source_segment_info['global_id']}")
                                 else:
-                                    st.info("DEBUG Streamlit: Nessun altro segmento disponibile per l'overlay secondario, salta.")
                                     print("LOG: Nessun altro segmento disponibile per l'overlay secondario, salta.")
                                     continue
                             
                             source_video_clip_original = self.video_clips_map.get(source_segment_info['video_id'])
                             if not source_video_clip_original:
-                                st.info(f"DEBUG Streamlit: SKIP Overlay: VideoFileClip originale non trovato per ID {source_segment_info['video_id']}")
                                 print(f"LOG: SKIP Overlay Secondario: VideoFileClip originale non trovato per ID {source_segment_info['video_id']}")
                                 continue
 
@@ -272,7 +246,6 @@ class MultiVideoShuffler:
                             overlay_w = max(50, overlay_w)
                             overlay_h = max(50, overlay_h)
                             
-                            st.info(f"DEBUG Streamlit: Overlay secondario - calcolate dimensioni: {overlay_w}x{overlay_h}.")
                             # Posizione casuale per l'overlay secondario
                             max_x = base_w - overlay_w
                             max_y = base_h - overlay_h
@@ -297,8 +270,6 @@ class MultiVideoShuffler:
                             start_delay_in_primary_period = random.uniform(0, max(0, primary_clip_duration - secondary_overlay_duration))
                             overlay_start_time_in_final_video = current_time + start_delay_in_primary_period
                             
-                            st.info(f"DEBUG Streamlit: Overlay secondario - tempi e posizioni calcolati. source: {source_start_time_in_original:.2f}-{source_end_time_in_original:.2f}, composito: {overlay_start_time_in_final_video:.2f}, pos: {pos_x},{pos_y}.")
-
                             if source_video_clip_original.duration >= source_end_time_in_original:
                                 secondary_overlay_clip = (source_video_clip_original
                                                           .subclip(source_start_time_in_original, source_end_time_in_original)
@@ -308,14 +279,11 @@ class MultiVideoShuffler:
                                                           .set_opacity(0.7)) # Trasparenza 70%
 
                                 final_clips.append(secondary_overlay_clip)
-                                st.info(f"DEBUG Streamlit: Aggiunto elemento SECONDARIO del collage. Clip #{overlay_idx+1}, tipo: '{desc}'.")
                                 print(f"LOG: AGGIUNTO Overlay SECONDARIO #{overlay_idx+1}: '{desc}' da '{source_segment_info['video_name']}' S#{source_segment_info['segment_id']} ({overlay_w}x{overlay_h}) at ({pos_x},{pos_y}), start_composito:{overlay_start_time_in_final_video:.2f}s, durata:{secondary_overlay_duration:.2f}s")
                             else:
-                                st.info(f"DEBUG Streamlit: SKIP Overlay Secondario: durata insufficiente per subclip. Originale: {source_video_clip_original.duration:.2f}s, Desiderata: {source_end_time_in_original:.2f}s")
                                 print(f"LOG: SKIP Overlay Secondario: durata insufficiente per subclip. Originale: {source_video_clip_original.duration:.2f}s, Desiderata: {source_end_time_in_original:.2f}s")
 
                         except Exception as e:
-                            st.error(f"DEBUG Streamlit: Errore durante la creazione di un elemento collage secondario: {e}")
                             print(f"LOG: Errore durante la creazione di un elemento collage secondario: {e}")
                             import traceback
                             traceback.print_exc()
@@ -324,46 +292,30 @@ class MultiVideoShuffler:
                 # Avanza il tempo nel video composito per il prossimo periodo primario
                 current_time += primary_clip_duration
             
-            st.info(f"DEBUG Streamlit: Elaborazione tutti i main_clip completata. Totale clip per composito: {len(final_clips)}.")
             print(f"LOG: Totale clip nella lista per il composito (elementi primari + secondari): {len(final_clips)}")
             
             if not final_clips:
-                st.info("DEBUG Streamlit: Nessun clip finale da comporre dopo l'elaborazione del collage.")
                 print("LOG: Nessun clip finale da comporre dopo l'elaborazione del collage.")
                 return None
 
             # Crea il video composito finale
             # La dimensione del canvas è definita all'inizio
-            try:
-                composite_video = CompositeVideoClip(final_clips, size=(base_w, base_h))
-                st.info(f"DEBUG Streamlit: CompositeVideoClip creato. Totale elementi: {len(final_clips)}. Tempo totale: {composite_video.duration:.2f}s.")
-                print("LOG: CompositeVideoClip collage creato con successo.")
-                return composite_video
-            except Exception as e:
-                st.error(f"DEBUG Streamlit: Errore nella creazione di CompositeVideoClip: {e}")
-                print(f"LOG: Errore nella creazione di CompositeVideoClip: {e}")
-                import traceback
-                traceback.print_exc()
-                # Prova il fallback se la composizione fallisce
-                st.info("DEBUG Streamlit: Fallback: concatenazione normale dopo errore composizione.")
-                # MODIFICA QUI: AGGIUNTA 's' a concatenate_videoclip
-                return concatenate_videoclips(main_clips_sequence, method="compose")
+            composite_video = CompositeVideoClip(final_clips, size=(base_w, base_h))
+            print("LOG: CompositeVideoClip collage creato con successo.")
+            return composite_video
             
         except Exception as e:
-            st.error(f"DEBUG Streamlit: ERRORE CRITICO in create_artistic_overlay (collage): {e}")
             print(f"ERRORE CRITICO in create_artistic_overlay (collage): {e}")
             import traceback
             traceback.print_exc()
             try:
-                st.info("DEBUG Streamlit: Fallback generale: concatenazione normale dopo errore critico overlay.")
-                # MODIFICA QUI: AGGIUNTA 's' a concatenate_videoclip
+                print("LOG: Fallback: concatenazione normale dopo errore critico collage.")
                 return concatenate_videoclips(main_clips_sequence, method="compose")
             except Exception as fallback_e:
-                st.error(f"DEBUG Streamlit: Errore anche nel fallback: {fallback_e}")
                 print(f"LOG: Errore anche nel fallback: {fallback_e}")
                 return None
 
-    def process_videos(self, video_paths, output_path, progress_callback=None, fps=None, enable_overlay=False): 
+    def process_videos(self, video_paths, output_path, progress_callback=None, fps=None, enable_overlay=False, overlay_sizes=None): # overlay_sizes ora non usato
         """Processa i video per creare la sequenza finale, con opzione per overlay artistici."""
         if not MOVIEPY_AVAILABLE:
             return False, "MoviePy non disponibile."
@@ -432,19 +384,16 @@ class MultiVideoShuffler:
 
             # Abilita l'overlay se la flag è True E ci sono almeno 2 clip (per un collage significativo)
             if enable_overlay and len(extracted_clips_for_final_sequence) > 1:
-                st.info("DEBUG Streamlit: Tentativo di applicare effetti collage.")
                 print("Applicando effetti collage artistici...")
                 # Chiama create_artistic_overlay passando i clip della sequenza principale,
                 # e la lista di tutti i dizionari dei segmenti (per la selezione casuale degli overlay)
                 final_video = self.create_artistic_overlay(
                     extracted_clips_for_final_sequence, 
-                    self.all_segments, 
+                    self.all_segments, # all_segments contiene i dizionari di tutti i segmenti disponibili
                     progress_callback
                 )
             else:
-                st.info("DEBUG Streamlit: Concatenazione normale (collage disabilitato o insufficienti clip).")
                 print("Concatenazione normale (collage disabilitato o insufficienti clip)...")
-                # MODIFICA QUI: AGGIUNTA 's' a concatenate_videoclip
                 final_video = concatenate_videoclips(extracted_clips_for_final_sequence, method="compose")
             
             if not final_video:
@@ -541,7 +490,7 @@ if mode == "Single Video (classico)":
                 st.success(f"Video caricato - Durata: {round(total_duration, 2)} secondi")
             else:
                 total_duration = 60 # Simulazione durata per MoviePy non installato
-                # Il messaggio di avviso ora viene dall'except block in alto
+                st.warning("MoviePy non disponibile, durata video simulata.")
             
             # Mostra l'anteprima del video caricato
             st.video(input_path) # Usa il path locale temporaneo
@@ -605,7 +554,7 @@ if mode == "Single Video (classico)":
                             with st.spinner("Creazione video remix in corso..."):
                                 success, result = shuffler.process_videos(
                                     video_paths, output_path, progress_callback, 
-                                    fps=fps_param, enable_overlay=enable_overlay 
+                                    fps=fps_param, enable_overlay=enable_overlay # overlay_sizes rimosso
                                 )
                             
                             progress_bar.progress(100) # Completa la barra al 100% alla fine
@@ -630,7 +579,7 @@ if mode == "Single Video (classico)":
                             
                             status_text.empty()
                         else:
-                            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.") # Questo verrà mostrato solo se l'import è fallito in alto
+                            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.")
                             
                 except ValueError:
                     st.error("Inserisci valori numerici validi per la durata dei segmenti o il seed.")
@@ -676,7 +625,7 @@ else:
                     duration2 = clip2.duration
             else:
                 duration1 = duration2 = 60 # Simulazione durata per MoviePy non installato
-                # Il messaggio di avviso ora viene dall'except block in alto
+                st.warning("MoviePy non disponibile, durate video simulate.")
                 
             # Mostra anteprime
             col1, col2 = st.columns(2)
@@ -754,7 +703,7 @@ else:
                             with st.spinner("Creazione Multi-Mix artistico in corso..."):
                                 success, result = shuffler.process_videos(
                                     video_paths, output_path, progress_callback,
-                                    fps=fps_param, enable_overlay=enable_overlay 
+                                    fps=fps_param, enable_overlay=enable_overlay # overlay_sizes rimosso
                                 )
                             
                             progress_bar.progress(100) # Completa la barra al 100% alla fine
@@ -780,7 +729,7 @@ else:
                                 
                             status_text.empty()
                         else:
-                            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.") # Questo verrà mostrato solo se l'import è fallito in alto
+                            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.")
                             
                 except ValueError:
                     st.error("Inserisci valori numerici validi per la durata dei segmenti o il seed.")
@@ -826,7 +775,7 @@ with st.expander("Come funziona - VERSIONE COLLAGE DINAMICO"):
     ### **Troubleshooting & Consigli:**
     - **Video troppo lunghi o grandi**: Possono causare problemi di memoria o tempi di elaborazione molto lunghi. Per video lunghi, prova con durate di segmento di 2-3 secondi per ridurre il numero totale di clip da gestire.
     - **Consumo Memoria (RAM)**: L'elaborazione video è intensiva. Chiudi altre applicazioni e assicurati di avere RAM disponibile. Se continui ad avere problemi, prova con video più brevi o con risoluzioni più basse.
-    - **Crash durante processing**: Verifica che i tuoi file video siano integri e in un formato ben supportato da MoviePy (MP4 con codec H.264 è il più affidabile). Controlla la console/terminale dove è lanciata l'app Streamlit per messaggi di errore dettagliati (stack trace).
+    - **Crash durante processing**: Verifica che i tuoi file video siano integri e in un formato ben supportato da MoviePy (MP4 con codec H.264 è il più affidabile). A volte i file con codec esotici possono dare problemi. Controlla la console/terminale dove è lanciata l'app Streamlit per messaggi di errore dettagliati (stack trace).
 
     ### **Performance Attese:**
     - **Tempo elaborazione**: Varia in base alla potenza del tuo hardware e alla durata/risoluzione del video. Tipicamente, aspettati circa 30-60 secondi di elaborazione per ogni minuto di video di output. L'effetto collage può aumentare leggermente il tempo.

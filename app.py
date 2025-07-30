@@ -348,11 +348,16 @@ st.set_page_config(page_title="VideoDecomposer Multi-Mix by loop507", layout="wi
 st.title("VideoDecomposer Multi-Mix by loop507")
 st.subheader("Mescola segmenti da più video con effetti artistici!")
 
-# Inizializza session state
+# Inizializza session state per le variabili di progresso
+if 'current_progress_single_video' not in st.session_state:
+    st.session_state.current_progress_single_video = 0
+if 'current_progress_multi_video' not in st.session_state:
+    st.session_state.current_progress_multi_video = 0
 if 'processed_video' not in st.session_state:
     st.session_state.processed_video = None
 if 'output_path' not in st.session_state:
     st.session_state.output_path = None
+
 
 # Scelta modalità
 mode = st.radio(
@@ -431,15 +436,14 @@ if mode == "Single Video (classico)":
                             progress_bar = st.progress(0)
                             status_text = st.empty()
                             
-                            # CORREZIONE: Variabile per tenere traccia del progresso
-                            current_progress_single_video = 0 
+                            # CORREZIONE: Usa st.session_state per il progresso
+                            st.session_state.current_progress_single_video = 0 
 
                             def progress_callback(message):
-                                nonlocal current_progress_single_video # Dichiara che stai usando la variabile esterna
                                 status_text.text(f" {message}")
                                 # Incrementa il progresso e assicurati che non superi 90
-                                current_progress_single_video = min(90, current_progress_single_video + 10) 
-                                progress_bar.progress(current_progress_single_video) # Usa il valore numerico aggiornato
+                                st.session_state.current_progress_single_video = min(90, st.session_state.current_progress_single_video + 10) 
+                                progress_bar.progress(st.session_state.current_progress_single_video) # Usa il valore numerico aggiornato
                             
                             video_paths = {"V1": input_path}
                             fps_param = fps_value if custom_fps else None
@@ -597,15 +601,14 @@ else:
                             progress_bar = st.progress(0)
                             status_text = st.empty()
                             
-                            # CORREZIONE: Variabile per tenere traccia del progresso
-                            current_progress_multi_video = 0
+                            # CORREZIONE: Usa st.session_state per il progresso
+                            st.session_state.current_progress_multi_video = 0
 
                             def progress_callback(message):
-                                nonlocal current_progress_multi_video # Dichiara che stai usando la variabile esterna
                                 status_text.text(f" {message}")
                                 # Incrementa il progresso e assicurati che non superi 90
-                                current_progress_multi_video = min(90, current_progress_multi_video + 5)
-                                progress_bar.progress(current_progress_multi_video) # Usa il valore numerico aggiornato
+                                st.session_state.current_progress_multi_video = min(90, st.session_state.current_progress_multi_video + 5)
+                                progress_bar.progress(st.session_state.current_progress_multi_video) # Usa il valore numerico aggiornato
                             
                             video_paths = {"V1": video1_path, "V2": video2_path}
                             fps_param = fps_value if custom_fps else None
@@ -666,6 +669,7 @@ with st.expander("Come funziona - VERSIONE CORRETTA"):
     - **Controlli di Validità**: Verifiche su dimensioni e timing
     - **Debug Avanzato**: Log dettagliati per troubleshooting
     - **Fallback Sistema**: Concatenazione normale se overlay fallisce
+    - **Gestione Progresso Streamlit**: Corretta con `st.session_state`
     
     ### **Modalità Multi-Video (NUOVA):**
     1. **Carica 2 video** di qualsiasi formato

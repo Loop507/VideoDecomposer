@@ -145,6 +145,7 @@ class MultiVideoShuffler:
             # Assumiamo che tutti i video siano della stessa risoluzione o si adattino bene.
             base_w, base_h = main_clips_sequence[0].size
             print(f"LOG: Dimensione Canvas del video finale: {base_w}x{base_h}")
+            st.info(f"DEBUG Streamlit: create_artistic_overlay avviata. Dimensione Canvas: {base_w}x{base_h}.")
             
             final_clips = []
             current_time = 0 # Tempo corrente nella sequenza del video composito
@@ -201,6 +202,7 @@ class MultiVideoShuffler:
                                            .set_opacity(random.uniform(0.8, 1.0))) # Meno trasparente o del tutto opaco
 
                 final_clips.append(primary_collage_element)
+                st.info(f"DEBUG Streamlit: Aggiunto elemento PRIMARIO del collage. Clip #{i+1}, tempo: {current_time:.2f}s.")
                 print(f"LOG: Aggiunto elemento PRIMARIO del collage #{i+1}: ({primary_w}x{primary_h}) at ({primary_pos_x},{primary_pos_y}), start:{current_time:.2f}s, durata:{primary_clip_duration:.2f}s")
                 
                 # --- AGGIUNTA DI ELEMENTI DI COLLAGE "SECONDARI" ---
@@ -279,6 +281,7 @@ class MultiVideoShuffler:
                                                           .set_opacity(0.7)) # Trasparenza 70%
 
                                 final_clips.append(secondary_overlay_clip)
+                                st.info(f"DEBUG Streamlit: Aggiunto elemento SECONDARIO del collage. Clip #{overlay_idx+1}, tipo: '{desc}'.")
                                 print(f"LOG: AGGIUNTO Overlay SECONDARIO #{overlay_idx+1}: '{desc}' da '{source_segment_info['video_name']}' S#{source_segment_info['segment_id']} ({overlay_w}x{overlay_h}) at ({pos_x},{pos_y}), start_composito:{overlay_start_time_in_final_video:.2f}s, durata:{secondary_overlay_duration:.2f}s")
                             else:
                                 print(f"LOG: SKIP Overlay Secondario: durata insufficiente per subclip. Originale: {source_video_clip_original.duration:.2f}s, Desiderata: {source_end_time_in_original:.2f}s")
@@ -301,6 +304,7 @@ class MultiVideoShuffler:
             # Crea il video composito finale
             # La dimensione del canvas è definita all'inizio
             composite_video = CompositeVideoClip(final_clips, size=(base_w, base_h))
+            st.info(f"DEBUG Streamlit: CompositeVideoClip creato. Totale elementi: {len(final_clips)}. Tempo totale: {composite_video.duration:.2f}s.")
             print("LOG: CompositeVideoClip collage creato con successo.")
             return composite_video
             
@@ -384,6 +388,7 @@ class MultiVideoShuffler:
 
             # Abilita l'overlay se la flag è True E ci sono almeno 2 clip (per un collage significativo)
             if enable_overlay and len(extracted_clips_for_final_sequence) > 1:
+                st.info("DEBUG Streamlit: Tentativo di applicare effetti collage.")
                 print("Applicando effetti collage artistici...")
                 # Chiama create_artistic_overlay passando i clip della sequenza principale,
                 # e la lista di tutti i dizionari dei segmenti (per la selezione casuale degli overlay)
@@ -393,6 +398,7 @@ class MultiVideoShuffler:
                     progress_callback
                 )
             else:
+                st.info("DEBUG Streamlit: Concatenazione normale (collage disabilitato o insufficienti clip).")
                 print("Concatenazione normale (collage disabilitato o insufficienti clip)...")
                 final_video = concatenate_videoclips(extracted_clips_for_final_sequence, method="compose")
             

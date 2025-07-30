@@ -127,7 +127,7 @@ class MultiVideoShuffler:
         schedule.append(f"\n⏱️ DURATA TOTALE: {self.format_duration(current_time)}")
         return "\n".join(schedule)
 
-    def process_videos(self, video_paths, output_path, progress_callback=None):
+    def process_videos(self, video_paths, output_path, progress_callback=None, fps=None, enable_overlay=False, overlay_sizes=[50, 100]):
         if not MOVIEPY_AVAILABLE:
             return False, "❌ MoviePy non disponibile."
 
@@ -135,6 +135,11 @@ class MultiVideoShuffler:
         for video_id, path in video_paths.items():
             if not os.path.exists(path):
                 return False, f"❌ File non trovato: {path}"
+
+        try:
+            from moviepy.editor import CompositeVideoClip
+        except ImportError:
+            return False, "❌ Impossibile importare CompositeVideoClip da MoviePy."
 
         video_clips = {}
         clips = []
@@ -171,6 +176,12 @@ class MultiVideoShuffler:
                 try:
                     print(f"Estraendo [{segment['video_name']}] Segmento #{segment['segment_id']} dalla posizione {i+1}: {segment['start']:.2f}s - {end_time:.2f}s")
                     clip = video.subclip(segment['start'], end_time)
+                    
+                    # Applica velocità FPS se specificata
+                    if fps and fps != clip.fps:
+                        clip = clip.set_fps(fps)
+                        print(f"FPS cambiato da {video.fps} a {fps}")
+                    
                     clips.append(clip)
                     
                     if progress_callback:
@@ -188,24 +199,38 @@ class MultiVideoShuffler:
             print(f"Totale clip estratti: {len(clips)}")
             
             if progress_callback:
-                progress_callback(f"Concatenazione di {len(clips)} segmenti mescolati...")
+                progress_callback(f"Concatenazione di {len(clips)} segmenti...")
 
             # Concatena i clip nell'ordine mescolato
-            final_video = concatenate_videoclips(clips, method="compose")
+            if enable_overlay and len(clips) > 1:
+                if progress_callback:
+                    progress_callback("Applicazione effetti artistici overlay...")
+                
+                # Crea effetto artistico con overlay
+                final_video = self.create_artistic_overlay(clips, overlay_sizes, progress_callback)
+            else:
+                # Concatenazione normale
+                final_video = concatenate_videoclips(clips, method="compose")
             
             if progress_callback:
                 progress_callback("Salvataggio video finale...")
 
+            # Parametri di output
+            output_params = {
+                'codec': 'libx264',
+                'audio_codec': 'aac',
+                'temp_audiofile': 'temp-audio.m4a',
+                'remove_temp': True,
+                'verbose': False,
+                'logger': None
+            }
+            
+            # Aggiungi FPS se specificato
+            if fps:
+                output_params['fps'] = fps
+
             # Scrivi il video finale
-            final_video.write_videofile(
-                output_path,
-                codec='libx264',
-                audio_codec='aac',
-                temp_audiofile='temp-audio.m4a',
-                remove_temp=True,
-                verbose=False,
-                logger=None
-            )
+            final_video.write_videofile(output_path, **output_params)
 
             print(f"Video finale multi-mix salvato: {output_path}")
             return True, output_path
@@ -227,6 +252,73 @@ class MultiVideoShuffler:
                         clip.close()
             except:
                 pass
+
+    def create_artistic_overlay(self, clips, overlay_sizes, progress_callback=None):
+        """Crea un effetto artistico con overlay di frame di diverse dimensioni"""
+        try:
+            from moviepy.editor import CompositeVideoClip
+            import random
+            
+            if not clips:
+                return None
+                
+            # Prendi il primo clip come base per dimensioni
+            base_clip = clips[0]
+            base_w, base_h = base_clip.size
+            
+            composite_clips = []
+            current_time = 0
+            
+            for i, clip in enumerate(clips):
+                if progress_callback:
+                    progress_callback(f"Effetto artistico su segmento {i+1}/{len(clips)}")
+                
+                # Clip principale a schermo intero
+                main_clip = clip.set_position('center').set_start(current_time)
+                composite_clips.append(main_clip)
+                
+                # Aggiungi overlay artistici casuali
+                if len(clips) > 1:
+                    # Scegli clip casuali per overlay (diversi dal principale)
+                    available_clips = [c for j, c in enumerate(clips) if j != i]
+                    
+                    for overlay_size in overlay_sizes:
+                        if available_clips:
+                            # Scegli clip casuale per overlay
+                            overlay_clip = random.choice(available_clips)
+                            
+                            # Ridimensiona per overlay
+                            overlay_w = int(base_w * overlay_size / 100)
+                            overlay_h = int(base_h * overlay_size / 100)
+                            
+                            # Posizione casuale
+                            max_x = base_w - overlay_w
+                            max_y = base_h - overlay_h
+                            pos_x = random.randint(0, max(0, max_x))
+                            pos_y = random.randint(0, max(0, max_y))
+                            
+                            # Crea overlay con durata ridotta per effetto dinamico
+                            overlay_duration = min(clip.duration * 0.7, overlay_clip.duration)
+                            overlay_start = current_time + random.uniform(0, clip.duration * 0.3)
+                            
+                            overlay = (overlay_clip
+                                     .subclip(0, overlay_duration)
+                                     .resize((overlay_w, overlay_h))
+                                     .set_position((pos_x, pos_y))
+                                     .set_start(overlay_start)
+                                     .set_opacity(0.7))  # Trasparenza per effetto artistico
+                            
+                            composite_clips.append(overlay)
+                
+                current_time += clip.duration
+            
+            # Crea video composito
+            return CompositeVideoClip(composite_clips, size=(base_w, base_h))
+            
+        except Exception as e:
+            print(f"Errore nella creazione overlay artistico: {e}")
+            # Fallback: concatenazione normale
+            return concatenate_videoclips(clips, method="compose")
 
 
 # --- STREAMLIT UI ---
@@ -274,8 +366,23 @@ if mode == "🎬 Single Video (classico)":
                 
                 with col1:
                     segment_input = st.text_input("✂️ Durata segmenti (secondi)", "3")
+                    seed_input = st.text_input("🎲 Seed (opzionale)", "", help="Numero per risultati riproducibili. Stesso seed = stesso ordine!")
                 with col2:
-                    seed_input = st.text_input("🎲 Seed (opzionale)", "")
+                    # Controlli avanzati
+                    st.markdown("**🎬 Controlli Video:**")
+                    custom_fps = st.checkbox("📹 FPS personalizzato")
+                    fps_value = st.number_input("FPS:", min_value=1, max_value=60, value=30, disabled=not custom_fps)
+                
+                # Effetti artistici
+                st.markdown("**🎨 Effetti Artistici:**")
+                enable_overlay = st.checkbox("✨ Sovrapposizione artistica", help="Crea overlay con frame di diverse dimensioni")
+                
+                if enable_overlay:
+                    col3, col4 = st.columns(2)
+                    with col3:
+                        overlay1 = st.slider("📐 Overlay piccolo (%)", 5, 30, 15)
+                    with col4:
+                        overlay2 = st.slider("📐 Overlay grande (%)", 25, 50, 35)
                 
                 submitted = st.form_submit_button("🚀 Avvia elaborazione", use_container_width=True)
 
@@ -306,7 +413,15 @@ if mode == "🎬 Single Video (classico)":
                                 status_text.text(f"🎞️ {message}")
                             
                             video_paths = {"V1": input_path}
-                            success, result = shuffler.process_videos(video_paths, output_path, progress_callback)
+                            
+                            # Parametri per elaborazione
+                            fps_param = fps_value if custom_fps else None
+                            overlay_sizes = [overlay1, overlay2] if enable_overlay else [15, 35]
+                            
+                            success, result = shuffler.process_videos(
+                                video_paths, output_path, progress_callback, 
+                                fps=fps_param, enable_overlay=enable_overlay, overlay_sizes=overlay_sizes
+                            )
                             
                             progress_bar.progress(100)
                             
@@ -387,12 +502,28 @@ else:
                 
                 with col1:
                     segment_input = st.text_input("✂️ Durata segmenti (secondi)", "3")
+                    seed_input = st.text_input("🎲 Seed (opzionale)", "", help="Per risultati riproducibili")
                 with col2:
                     mix_ratio = st.slider("⚖️ Bilancio Video 1/Video 2", 0.1, 0.9, 0.5, 0.1)
+                    # Controlli FPS
+                    custom_fps = st.checkbox("📹 FPS personalizzato")
                 with col3:
-                    seed_input = st.text_input("🎲 Seed (opzionale)", "")
+                    fps_value = st.number_input("FPS:", min_value=1, max_value=60, value=30, disabled=not custom_fps)
                 
                 st.markdown(f"**Mix Ratio:** {mix_ratio:.1f} = {int(mix_ratio*100)}% Video 1, {int((1-mix_ratio)*100)}% Video 2")
+                
+                # Effetti artistici
+                st.markdown("**🎨 Effetti Artistici Multi-Video:**")
+                enable_overlay = st.checkbox("✨ Sovrapposizione artistica", help="Sovrappone frame dei due video con diverse dimensioni")
+                
+                if enable_overlay:
+                    col4, col5 = st.columns(2)
+                    with col4:
+                        overlay1 = st.slider("📐 Frame piccoli (%)", 5, 25, 12, key="multi_overlay1")
+                    with col5:
+                        overlay2 = st.slider("📐 Frame grandi (%)", 20, 50, 30, key="multi_overlay2")
+                    
+                    st.info("🎭 L'effetto sovrapporrà frame casuali dai due video creando un mix artistico!")
                 
                 submitted = st.form_submit_button("🎭 Crea Multi-Mix", use_container_width=True)
 
@@ -429,8 +560,15 @@ else:
                             
                             video_paths = {"V1": video1_path, "V2": video2_path}
                             
+                            # Parametri per elaborazione
+                            fps_param = fps_value if custom_fps else None
+                            overlay_sizes = [overlay1, overlay2] if enable_overlay else [12, 30]
+                            
                             with st.spinner("🎭 Creazione Multi-Mix in corso..."):
-                                success, result = shuffler.process_videos(video_paths, output_path, progress_callback)
+                                success, result = shuffler.process_videos(
+                                    video_paths, output_path, progress_callback,
+                                    fps=fps_param, enable_overlay=enable_overlay, overlay_sizes=overlay_sizes
+                                )
                             
                             progress_bar.progress(100)
                             
@@ -479,6 +617,7 @@ with st.expander("ℹ️ Come funziona il Multi-Mix"):
     ### 🎬 Modalità Single Video:
     - Stessa funzionalità della versione originale
     - Divide un video in segmenti e li rimescola
+    - **Novità:** Controlli FPS e effetti artistici!
     
     ### 🎭 Modalità Multi-Mix:
     - **Carica 2 video** diversi
@@ -486,11 +625,27 @@ with st.expander("ℹ️ Come funziona il Multi-Mix"):
     - **Bilancia il mix** con lo slider (0.5 = bilanciato)
     - **Ottieni un video finale** con segmenti alternati dai due video!
     
+    ### 🎲 **SEED Spiegato:**
+    - **Senza seed**: Ordine casuale diverso ogni volta
+    - **Con seed (es. 42)**: Ordine riproducibile identico
+    - **Utilità**: Salva il seed per ricreare lo stesso mix!
+    
+    ### 🎨 **Effetti Artistici:**
+    - **Sovrapposizione Frame**: Sovrappone frame più piccoli durante il video
+    - **Frame Piccoli/Grandi**: Controlla dimensioni overlay (% dello schermo)
+    - **Multi-Video**: Usa frame da entrambi i video per overlay creativi!
+    
+    ### 📹 **Controlli FPS:**
+    - **FPS personalizzato**: Cambia velocità di riproduzione
+    - **Valori bassi (15 FPS)**: Effetto cinematico vintage
+    - **Valori alti (60 FPS)**: Fluidità extra per azioni veloci
+    
     💡 **Suggerimenti:**
     - Usa video con durate simili per risultati migliori
     - Mix ratio 0.3 = più Video 2, 0.7 = più Video 1
     - Segmenti corti (1-3s) per transizioni dinamiche
-    - Usa seed per risultati riproducibili
+    - Overlay artistici funzionano meglio con contenuti contrastanti
+    - FPS 24-30 per risultati naturali, 15 per effetti vintage
     """)
 
 # Pulizia file temporanei

@@ -1,5 +1,4 @@
 ffmpeg
+imagemagick
 libsm6
 libxext6
-libfontconfig1
-libxrender1

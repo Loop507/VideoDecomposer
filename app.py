@@ -4,6 +4,20 @@ import tempfile
 from datetime import timedelta
 import streamlit as st
 
+# Fix per compatibilità PIL/Pillow con MoviePy
+try:
+    from PIL import Image
+    if not hasattr(Image, 'ANTIALIAS'):
+        Image.ANTIALIAS = Image.LANCZOS
+    if not hasattr(Image, 'LINEAR'):
+        Image.LINEAR = Image.BILINEAR
+    # Fix aggiuntivo per versioni molto recenti
+    if hasattr(Image, 'Resampling'):
+        Image.ANTIALIAS = Image.Resampling.LANCZOS
+        Image.LINEAR = Image.Resampling.BILINEAR
+except ImportError:
+    pass
+
 try:
     from moviepy.editor import VideoFileClip, concatenate_videoclips, CompositeVideoClip
     MOVIEPY_AVAILABLE = True
@@ -176,11 +190,19 @@ class MultiVideoShuffler:
                 primary_clip_duration = main_clip.duration
                 
                 # Crea elemento principale del collage
-                primary_collage_element = (main_clip
-                                           .resize((primary_w, primary_h))
-                                           .set_position((primary_pos_x, primary_pos_y))
-                                           .set_start(current_time)
-                                           .set_opacity(0.95))
+                try:
+                    primary_collage_element = (main_clip
+                                               .resize((primary_w, primary_h))
+                                               .set_position((primary_pos_x, primary_pos_y))
+                                               .set_start(current_time)
+                                               .set_opacity(0.95))
+                except Exception as resize_error:
+                    st.warning(f"Errore ridimensionamento principale: {resize_error}")
+                    # Fallback senza ridimensionamento
+                    primary_collage_element = (main_clip
+                                               .set_position((primary_pos_x, primary_pos_y))
+                                               .set_start(current_time)
+                                               .set_opacity(0.95))
 
                 final_clips.append(primary_collage_element)
                 st.write(f"✅ **Elemento Principale #{i+1}:** {primary_w}x{primary_h} a posizione ({primary_pos_x},{primary_pos_y})")
@@ -249,12 +271,25 @@ class MultiVideoShuffler:
                             overlay_start_time_in_final_video = current_time + start_delay_in_primary_period
                             
                             if source_video_clip_original.duration >= source_end_time_in_original:
-                                secondary_overlay_clip = (source_video_clip_original
-                                                          .subclip(source_start_time_in_original, source_end_time_in_original)
-                                                          .resize((overlay_w, overlay_h))
-                                                          .set_position((pos_x, pos_y))
-                                                          .set_start(overlay_start_time_in_final_video)
-                                                          .set_opacity(0.7))
+                                try:
+                                    secondary_overlay_clip = (source_video_clip_original
+                                                              .subclip(source_start_time_in_original, source_end_time_in_original)
+                                                              .resize((overlay_w, overlay_h))
+                                                              .set_position((pos_x, pos_y))
+                                                              .set_start(overlay_start_time_in_final_video)
+                                                              .set_opacity(0.7))
+                                except Exception as overlay_resize_error:
+                                    st.warning(f"Errore ridimensionamento overlay: {overlay_resize_error}")
+                                    # Fallback senza ridimensionamento
+                                    try:
+                                        secondary_overlay_clip = (source_video_clip_original
+                                                                  .subclip(source_start_time_in_original, source_end_time_in_original)
+                                                                  .set_position((pos_x, pos_y))
+                                                                  .set_start(overlay_start_time_in_final_video)
+                                                                  .set_opacity(0.7))
+                                    except Exception as fallback_error:
+                                        st.warning(f"Errore anche nel fallback overlay: {fallback_error}")
+                                        continue
 
                                 final_clips.append(secondary_overlay_clip)
                                 st.write(f"  ➕ **Overlay #{overlay_idx+1}:** {desc} ({overlay_w}x{overlay_h}) da '{source_segment_info['video_name']}'")
@@ -604,100 +639,156 @@ def process_single_video(uploaded_video, input_path, total_duration, segment_inp
 
 def process_multi_video_upload(video1, video2):
     temp_dir = tempfile.gettempdir()
-    video1_path = os.path.join(temp_dir, f"v1_{os.path.basename(video1.name)}")
-    video2_path = os.path.join(temp_dir, f"v2_{os.path.basename(video2.name)}")
     
-    # Salva i file temporaneamente
+    # Salva i file temporanei
+    video1_filename = f"multi_video1_{os.path.basename(video1.name)}"
+    video2_filename = f"multi_video2_{os.path.basename(video2.name)}"
+    video1_path = os.path.join(temp_dir, video1_filename)
+    video2_path = os.path.join(temp_dir, video2_filename)
+    
     with open(video1_path, "wb") as f:
         f.write(video1.read())
     with open(video2_path, "wb") as f:
         f.write(video2.read())
 
     try:
-        duration1, duration2 = 0, 0
+        # Ottieni durate video
+        durations = {}
         if MOVIEPY_AVAILABLE:
             with VideoFileClip(video1_path) as clip1:
-                duration1 = clip1.duration
+                durations["V1"] = clip1.duration
             with VideoFileClip(video2_path) as clip2:
-                duration2 = clip2.duration
-        else:
-            duration1 = duration2 = 60
-            st.warning("MoviePy non disponibile, durate video simulate.")
+                durations["V2"] = clip2.duration
             
-        # Mostra anteprime
+            st.success(f"✅ Video caricati:")
+            st.write(f"• **{video1.name}**: {round(durations['V1'], 2)} secondi")
+            st.write(f"• **{video2.name}**: {round(durations['V2'], 2)} secondi")
+        else:
+            durations = {"V1": 120, "V2": 90}  # Valori simulati
+            st.warning("MoviePy non disponibile - durate simulate.")
+
+        # Anteprima video
         col1, col2 = st.columns(2)
         with col1:
             st.video(video1_path)
-            st.info(f"Durata: {round(duration1, 2)}s")
         with col2:
             st.video(video2_path)
-            st.info(f"Durata: {round(duration2, 2)}s")
 
+        # Form parametri multi-video
         with st.form("multi_params_form"):
+            st.markdown("### ⚙️ Parametri Multi-Mix")
+            
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                segment_input = st.text_input("Durata segmenti (secondi)", "3")
+                segment_input = st.text_input("Durata segmenti (sec)", "2.5", help="Segmenti più brevi = mix più dinamico")
                 seed_input = st.text_input("Seed (opzionale)", "", help="Per risultati riproducibili")
                 
             with col2:
-                mix_ratio = st.slider("Bilancio Video 1/Video 2", 0.1, 0.9, 0.5, 0.1)
-                custom_fps = st.checkbox("FPS personalizzato", key="multi_custom_fps_check")
-            
+                mix_ratio = st.slider(
+                    "Mix Ratio", 
+                    min_value=0.1, 
+                    max_value=0.9, 
+                    value=0.5, 
+                    step=0.1,
+                    help=f"0.5 = 50%/50%, 0.3 = più {video2.name}"
+                )
+                custom_fps = st.checkbox("FPS personalizzato")
+                
             with col3:
-                fps_value = st.number_input("FPS:", min_value=1, max_value=60, value=30, disabled=not custom_fps)
+                fps_value = st.number_input("FPS:", min_value=15, max_value=60, value=24, disabled=not custom_fps)
+                st.write(f"**Rapporto previsto:**")
+                st.write(f"• {video1.name}: {int(mix_ratio*100)}%")
+                st.write(f"• {video2.name}: {int((1-mix_ratio)*100)}%")
             
-            st.markdown("**🎨 Effetti Artistici (Collage Dinamico):**")
+            st.markdown("---")
+            st.markdown("**🎨 Effetti Artistici Avanzati:**")
+            
             enable_overlay = st.checkbox(
-                "Abilita effetto collage dinamico", 
-                help="I segmenti video diventano elementi di un collage artistico con forme e posizioni casuali.",
-                key="multi_overlay_check"
+                "🎭 Abilita Collage Dinamico Multi-Video", 
+                value=True,
+                help="Crea un collage artistico con elementi sovrapposti da entrambi i video"
             )
             
             if enable_overlay:
-                st.info("🎭 I video verranno mescolati in un collage artistico dinamico!")
+                st.info("🌟 **Collage Attivo:** I segmenti principali verranno mescolati con overlay casuali dall'altro video!")
+                
+                col_effect1, col_effect2 = st.columns(2)
+                with col_effect1:
+                    st.markdown("**Effetti inclusi:**")
+                    st.write("• Ridimensionamento dinamico")
+                    st.write("• Posizionamento casuale")
+                    st.write("• Overlay multipli (2-4 per segmento)")
+                    
+                with col_effect2:
+                    st.markdown("**Forme artistiche:**")
+                    st.write("• Quadrati piccoli/medi")
+                    st.write("• Rettangoli orizzontali/verticali")
+                    st.write("• Panoramici allungati")
+            else:
+                st.warning("⚠️ Collage disabilitato - verrà usata concatenazione normale")
             
-            submitted = st.form_submit_button("🎬 Crea Multi-Mix", use_container_width=True)
+            submitted = st.form_submit_button("🚀 Genera Multi-Mix Collage", use_container_width=True)
 
         if submitted:
-            process_multi_video_creation(
-                video1, video2, video1_path, video2_path, 
-                duration1, duration2, segment_input, seed_input, 
-                mix_ratio, custom_fps, fps_value, enable_overlay
+            process_multi_video_generation(
+                video1, video2, video1_path, video2_path, durations,
+                segment_input, seed_input, mix_ratio, custom_fps, fps_value, enable_overlay
             )
-                        
+            
     except Exception as e:
-        st.error(f"Errore nell'elaborazione dei video: {str(e)}")
+        st.error(f"Errore durante il caricamento dei video: {str(e)}")
 
-def process_multi_video_creation(video1, video2, video1_path, video2_path, duration1, duration2, 
-                                segment_input, seed_input, mix_ratio, custom_fps, fps_value, enable_overlay):
+def process_multi_video_generation(video1, video2, video1_path, video2_path, durations, 
+                                 segment_input, seed_input, mix_ratio, custom_fps, fps_value, enable_overlay):
     try:
         segment_duration = float(segment_input)
         
         if segment_duration <= 0:
-            st.error("La durata del segmento deve essere positiva.")
+            st.error("La durata dei segmenti deve essere positiva.")
             return
             
+        # Crea shuffler
         shuffler = MultiVideoShuffler()
         
-        # Aggiungi entrambi i video
-        segments1 = shuffler.add_video("V1", video1.name, duration1, segment_duration)
-        segments2 = shuffler.add_video("V2", video2.name, duration2, segment_duration)
+        # Aggiungi video
+        num_segments_v1 = shuffler.add_video("V1", video1.name, durations["V1"], segment_duration)
+        num_segments_v2 = shuffler.add_video("V2", video2.name, durations["V2"], segment_duration)
         
-        st.info(f"📊 Video 1: {segments1} segmenti | Video 2: {segments2} segmenti")
+        st.write(f"📊 **Segmenti generati:** {video1.name} = {num_segments_v1}, {video2.name} = {num_segments_v2}")
         
-        # Mescola con il rapporto specificato
+        # Mescola segmenti
         seed = int(seed_input) if seed_input.isdigit() else None
         shuffler.shuffle_all_segments(seed, mix_ratio)
 
         # Mostra scaletta
         st.subheader("📋 Scaletta Multi-Mix generata")
-        st.code(shuffler.generate_schedule())
+        schedule = shuffler.generate_schedule()
+        st.code(schedule, language="text")
+        
+        # Salva scaletta
+        schedule_filename = f"scaletta_multimix_{video1.name}_{video2.name}.txt"
+        st.download_button(
+            "📄 Scarica Scaletta",
+            schedule,
+            file_name=schedule_filename,
+            mime="text/plain"
+        )
 
+        # Elaborazione video
         if MOVIEPY_AVAILABLE:
-            output_filename = f"multimix_collage_{os.path.splitext(video1.name)[0]}_{os.path.splitext(video2.name)[0]}.mp4" if enable_overlay else f"multimix_{os.path.splitext(video1.name)[0]}_{os.path.splitext(video2.name)[0]}.mp4"
+            st.markdown("---")
+            st.subheader("🎬 Elaborazione Video Multi-Mix")
+            
+            # Nome file output
+            if enable_overlay:
+                output_filename = f"multimix_collage_{os.path.splitext(video1.name)[0]}_{os.path.splitext(video2.name)[0]}.mp4"
+            else:
+                output_filename = f"multimix_{os.path.splitext(video1.name)[0]}_{os.path.splitext(video2.name)[0]}.mp4"
+                
             output_path = os.path.join(tempfile.gettempdir(), output_filename)
             
+            # Progress tracking
             progress_bar = st.progress(0)
             status_text = st.empty()
             
@@ -705,53 +796,98 @@ def process_multi_video_creation(video1, video2, video1_path, video2_path, durat
 
             def progress_callback(message):
                 status_text.text(f"⏳ {message}")
-                st.session_state.current_progress_multi_video = min(90, st.session_state.current_progress_multi_video + 3)
+                st.session_state.current_progress_multi_video = min(95, st.session_state.current_progress_multi_video + 3)
                 progress_bar.progress(st.session_state.current_progress_multi_video)
             
+            # Parametri video
             video_paths = {"V1": video1_path, "V2": video2_path}
             fps_param = fps_value if custom_fps else None
             
-            with st.spinner("🎬 Creazione Multi-Mix in corso..."):
+            # Elaborazione
+            with st.spinner("🎭 Creazione Multi-Mix con effetti collage..."):
                 success, result = shuffler.process_videos(
                     video_paths, output_path, progress_callback, 
                     fps=fps_param, enable_overlay=enable_overlay
                 )
             
             progress_bar.progress(100)
+            status_text.empty()
             
             if success:
-                st.success("✅ Multi-Mix completato!")
+                st.success("🎉 **Multi-Mix Collage completato con successo!**")
+                
                 if os.path.exists(result):
                     file_size = os.path.getsize(result) / (1024 * 1024)
-                    st.info(f"📁 File generato: {file_size:.2f} MB")
                     
-                    # Mostra anteprima se possibile
-                    try:
+                    # Info risultato
+                    st.markdown("### 📈 Statistiche Finali")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Dimensione File", f"{file_size:.2f} MB")
+                    with col2:
+                        total_segments = len(shuffler.shuffled_order)
+                        st.metric("Segmenti Totali", total_segments)
+                    with col3:
+                        if enable_overlay:
+                            estimated_overlays = total_segments * 3  # Media overlay per segmento
+                            st.metric("Overlay Stimati", estimated_overlays)
+                        else:
+                            st.metric("Tipo", "Standard")
+                    
+                    # Anteprima risultato
+                    if file_size < 50:  # Solo se il file non è troppo grande
                         st.video(result)
-                    except:
-                        st.info("Anteprima non disponibile, procedi con il download.")
+                    else:
+                        st.warning("File troppo grande per l'anteprima, usa il download.")
                     
+                    # Download
                     with open(result, "rb") as f:
                         st.download_button(
-                            "⬇️ Scarica Multi-Mix",
+                            "⬇️ Scarica Multi-Mix Collage",
                             f.read(),
                             file_name=output_filename,
                             mime="video/mp4",
                             use_container_width=True
                         )
+                        
+                    # Statistiche dettagliate
+                    with st.expander("📊 Statistiche Dettagliate"):
+                        video_stats = {}
+                        for segment in shuffler.shuffled_order:
+                            video_id = segment['video_id']
+                            if video_id not in video_stats:
+                                video_stats[video_id] = {'count': 0, 'total_duration': 0}
+                            video_stats[video_id]['count'] += 1
+                            video_stats[video_id]['total_duration'] += segment['duration']
+                        
+                        for video_id, stats in video_stats.items():
+                            video_name = video1.name if video_id == "V1" else video2.name
+                            percentage = (stats['total_duration'] / sum(s['total_duration'] for s in video_stats.values())) * 100
+                            
+                            st.write(f"**{video_name}:**")
+                            st.write(f"  • Segmenti utilizzati: {stats['count']}")
+                            st.write(f"  • Durata totale: {stats['total_duration']:.1f}s")
+                            st.write(f"  • Percentuale finale: {percentage:.1f}%")
+                            
                 else:
-                    st.error("File di output non trovato. Si prega di riprovare.")
+                    st.error("❌ File di output non trovato dopo l'elaborazione.")
             else:
                 st.error(f"❌ Errore durante l'elaborazione: {result}")
-            
-            status_text.empty()
+                st.write("💡 **Suggerimenti per risolvere:**")
+                st.write("• Prova con video più corti")
+                st.write("• Usa segmenti più lunghi (3-5 secondi)")
+                st.write("• Disabilita il collage se hai problemi di memoria")
+                st.write("• Assicurati che i video siano in formato MP4/H.264")
         else:
-            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.")
+            st.warning("🔧 MoviePy non disponibile - mostrata solo la scaletta.")
             
     except ValueError:
-        st.error("Inserisci un valore numerico valido per la durata dei segmenti.")
+        st.error("❌ Inserisci valori numerici validi per la durata dei segmenti.")
     except Exception as e:
-        st.error(f"Errore imprevisto: {str(e)}")
+        st.error(f"❌ Errore imprevisto: {str(e)}")
+        import traceback
+        with st.expander("🔍 Dettagli errore (per debug)"):
+            st.code(traceback.format_exc())
 
 if __name__ == "__main__":
     main()

@@ -319,7 +319,7 @@ class MultiVideoShuffler:
                 print(f"LOG: Errore anche nel fallback: {fallback_e}")
                 return None
 
-    def process_videos(self, video_paths, output_path, progress_callback=None, fps=None, enable_overlay=False, overlay_sizes=None): # overlay_sizes ora non usato
+    def process_videos(self, video_paths, output_path, progress_callback=None, fps=None, enable_overlay=False): # overlay_sizes rimosso dalla firma
         """Processa i video per creare la sequenza finale, con opzione per overlay artistici."""
         if not MOVIEPY_AVAILABLE:
             return False, "MoviePy non disponibile."
@@ -392,9 +392,10 @@ class MultiVideoShuffler:
                 print("Applicando effetti collage artistici...")
                 # Chiama create_artistic_overlay passando i clip della sequenza principale,
                 # e la lista di tutti i dizionari dei segmenti (per la selezione casuale degli overlay)
+                # NOTA: overlay_sizes non è più un parametro qui, la logica è interna a create_artistic_overlay
                 final_video = self.create_artistic_overlay(
                     extracted_clips_for_final_sequence, 
-                    self.all_segments, # all_segments contiene i dizionari di tutti i segmenti disponibili
+                    self.all_segments, 
                     progress_callback
                 )
             else:

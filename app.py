@@ -5,13 +5,14 @@ from datetime import timedelta
 import streamlit as st
 
 try:
-    from moviepy.editor import VideoFileClip, concatenate_videoclip, CompositeVideoClip
+    # MODIFICA QUI: AGGIUNTA 's' a concatenate_videoclip
+    from moviepy.editor import VideoFileClip, concatenate_videoclips, CompositeVideoClip
     MOVIEPY_AVAILABLE = True
-except ImportError as e: # <--- MODIFICA QUI
+except ImportError as e:
     MOVIEPY_AVAILABLE = False
     st.error(f"ATTENZIONE: MoviePy non è disponibile. Errore di importazione: {e}. L'applicazione funzionerà in modalità simulazione.")
-    print(f"LOG ERRORE: MoviePy ImportError - {e}") # Per i log di Streamlit Cloud
-except Exception as e: # <--- E ANCHE QUI PER QUALSIASI ALTRO ERRORE
+    print(f"LOG ERRORE: MoviePy ImportError - {e}")
+except Exception as e:
     MOVIEPY_AVAILABLE = False
     st.error(f"ATTENZIONE: Errore inatteso durante il caricamento di MoviePy: {e}. L'applicazione funzionerà in modalità simulazione.")
     print(f"LOG ERRORE: MoviePy General Exception - {e}")
@@ -345,7 +346,8 @@ class MultiVideoShuffler:
                 traceback.print_exc()
                 # Prova il fallback se la composizione fallisce
                 st.info("DEBUG Streamlit: Fallback: concatenazione normale dopo errore composizione.")
-                return concatenate_videoclip(main_clips_sequence, method="compose") # MoviePy 1.0.3 usa concatenate_videoclip
+                # MODIFICA QUI: AGGIUNTA 's' a concatenate_videoclip
+                return concatenate_videoclips(main_clips_sequence, method="compose")
             
         except Exception as e:
             st.error(f"DEBUG Streamlit: ERRORE CRITICO in create_artistic_overlay (collage): {e}")
@@ -354,7 +356,8 @@ class MultiVideoShuffler:
             traceback.print_exc()
             try:
                 st.info("DEBUG Streamlit: Fallback generale: concatenazione normale dopo errore critico overlay.")
-                return concatenate_videoclip(main_clips_sequence, method="compose") # MoviePy 1.0.3 usa concatenate_videoclip
+                # MODIFICA QUI: AGGIUNTA 's' a concatenate_videoclip
+                return concatenate_videoclips(main_clips_sequence, method="compose")
             except Exception as fallback_e:
                 st.error(f"DEBUG Streamlit: Errore anche nel fallback: {fallback_e}")
                 print(f"LOG: Errore anche nel fallback: {fallback_e}")
@@ -441,7 +444,8 @@ class MultiVideoShuffler:
             else:
                 st.info("DEBUG Streamlit: Concatenazione normale (collage disabilitato o insufficienti clip).")
                 print("Concatenazione normale (collage disabilitato o insufficienti clip)...")
-                final_video = concatenate_videoclip(extracted_clips_for_final_sequence, method="compose") # MoviePy 1.0.3 usa concatenate_videoclip
+                # MODIFICA QUI: AGGIUNTA 's' a concatenate_videoclip
+                final_video = concatenate_videoclips(extracted_clips_for_final_sequence, method="compose")
             
             if not final_video:
                 return False, "Impossibile creare video finale (forse nessun clip o errore composizione)."

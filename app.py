@@ -7,9 +7,14 @@ import streamlit as st
 try:
     from moviepy.editor import VideoFileClip, concatenate_videoclip, CompositeVideoClip
     MOVIEPY_AVAILABLE = True
-except ImportError:
+except ImportError as e: # <--- MODIFICA QUI
     MOVIEPY_AVAILABLE = False
-    st.warning("MoviePy non è installato. Funzionerà solo la simulazione.")
+    st.error(f"ATTENZIONE: MoviePy non è disponibile. Errore di importazione: {e}. L'applicazione funzionerà in modalità simulazione.")
+    print(f"LOG ERRORE: MoviePy ImportError - {e}") # Per i log di Streamlit Cloud
+except Exception as e: # <--- E ANCHE QUI PER QUALSIASI ALTRO ERRORE
+    MOVIEPY_AVAILABLE = False
+    st.error(f"ATTENZIONE: Errore inatteso durante il caricamento di MoviePy: {e}. L'applicazione funzionerà in modalità simulazione.")
+    print(f"LOG ERRORE: MoviePy General Exception - {e}")
 
 
 class MultiVideoShuffler:
@@ -532,7 +537,7 @@ if mode == "Single Video (classico)":
                 st.success(f"Video caricato - Durata: {round(total_duration, 2)} secondi")
             else:
                 total_duration = 60 # Simulazione durata per MoviePy non installato
-                st.warning("MoviePy non disponibile, durata video simulata.")
+                # Il messaggio di avviso ora viene dall'except block in alto
             
             # Mostra l'anteprima del video caricato
             st.video(input_path) # Usa il path locale temporaneo
@@ -621,7 +626,7 @@ if mode == "Single Video (classico)":
                             
                             status_text.empty()
                         else:
-                            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.")
+                            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.") # Questo verrà mostrato solo se l'import è fallito in alto
                             
                 except ValueError:
                     st.error("Inserisci valori numerici validi per la durata dei segmenti o il seed.")
@@ -667,7 +672,7 @@ else:
                     duration2 = clip2.duration
             else:
                 duration1 = duration2 = 60 # Simulazione durata per MoviePy non installato
-                st.warning("MoviePy non disponibile, durate video simulate.")
+                # Il messaggio di avviso ora viene dall'except block in alto
                 
             # Mostra anteprime
             col1, col2 = st.columns(2)
@@ -771,7 +776,7 @@ else:
                                 
                             status_text.empty()
                         else:
-                            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.")
+                            st.warning("MoviePy non disponibile - Solo simulazione della scaletta.") # Questo verrà mostrato solo se l'import è fallito in alto
                             
                 except ValueError:
                     st.error("Inserisci valori numerici validi per la durata dei segmenti o il seed.")
@@ -817,7 +822,7 @@ with st.expander("Come funziona - VERSIONE COLLAGE DINAMICO"):
     ### **Troubleshooting & Consigli:**
     - **Video troppo lunghi o grandi**: Possono causare problemi di memoria o tempi di elaborazione molto lunghi. Per video lunghi, prova con durate di segmento di 2-3 secondi per ridurre il numero totale di clip da gestire.
     - **Consumo Memoria (RAM)**: L'elaborazione video è intensiva. Chiudi altre applicazioni e assicurati di avere RAM disponibile. Se continui ad avere problemi, prova con video più brevi o con risoluzioni più basse.
-    - **Crash durante processing**: Verifica che i tuoi file video siano integri e in un formato ben supportato da MoviePy (MP4 con codec H.264 è il più affidabile). A volte i file con codec esotici possono dare problemi. Controlla la console/terminale dove è lanciata l'app Streamlit per messaggi di errore dettagliati (stack trace).
+    - **Crash durante processing**: Verifica che i tuoi file video siano integri e in un formato ben supportato da MoviePy (MP4 con codec H.264 è il più affidabile). Controlla la console/terminale dove è lanciata l'app Streamlit per messaggi di errore dettagliati (stack trace).
 
     ### **Performance Attese:**
     - **Tempo elaborazione**: Varia in base alla potenza del tuo hardware e alla durata/risoluzione del video. Tipicamente, aspettati circa 30-60 secondi di elaborazione per ogni minuto di video di output. L'effetto collage può aumentare leggermente il tempo.

@@ -75,35 +75,64 @@ class MultiVideoShuffler:
         self.video_segments[video_id] = segments
         return len(segments)
 
-    def shuffle_all_segments(self, seed=None, mix_ratio=0.5):
-        """Mescola tutti i segmenti di tutti i video"""
+    def shuffle_all_segments(self, seed=None, video_weights=None):
+        """Mescola tutti i segmenti di tutti i video con pesi personalizzabili"""
         if seed:
             random.seed(seed)
         
-        if len(self.video_segments) == 2:
-            video_ids = list(self.video_segments.keys())
-            video1_segments = [s for s in self.all_segments if s['video_id'] == video_ids[0]]
-            video2_segments = [s for s in self.all_segments if s['video_id'] == video_ids[1]]
+        num_videos = len(self.video_segments)
         
-            balanced_segments = []
-            max_len = max(len(video1_segments), len(video2_segments))
-            
-            for i in range(max_len):
-                if i < len(video1_segments) and (random.random() < mix_ratio or i >= len(video2_segments)):
-                    balanced_segments.append(video1_segments[i])
-                if i < len(video2_segments) and (random.random() >= mix_ratio or i >= len(video1_segments)):
-                    balanced_segments.append(video2_segments[i])
-            
-            random.shuffle(balanced_segments)
-            self.shuffled_order = balanced_segments
-        else:
+        if num_videos == 1:
+            # Single video - shuffle normale
             self.shuffled_order = self.all_segments.copy()
             random.shuffle(self.shuffled_order)
+            
+        elif num_videos >= 2:
+            # Multi video - bilanciamento intelligente
+            video_ids = list(self.video_segments.keys())
+            
+            # Se non ci sono pesi, usa distribuzione uniforme
+            if not video_weights:
+                video_weights = {vid: 1.0/num_videos for vid in video_ids}
+            
+            # Normalizza i pesi
+            total_weight = sum(video_weights.values())
+            normalized_weights = {vid: w/total_weight for vid, w in video_weights.items()}
+            
+            # Raggruppa segmenti per video
+            video_segment_lists = {}
+            for vid in video_ids:
+                video_segment_lists[vid] = [s for s in self.all_segments if s['video_id'] == vid]
+            
+            # Crea sequenza bilanciata
+            balanced_segments = []
+            max_segments = max(len(segments) for segments in video_segment_lists.values())
+            
+            for i in range(max_segments):
+                # Per ogni posizione, scegli da quale video prendere
+                available_videos = [vid for vid, segments in video_segment_lists.items() 
+                                  if i < len(segments)]
+                
+                if not available_videos:
+                    break
+                
+                # Scegli video basandosi sui pesi
+                if len(available_videos) == 1:
+                    chosen_video = available_videos[0]
+                else:
+                    weights = [normalized_weights[vid] for vid in available_videos]
+                    chosen_video = random.choices(available_videos, weights=weights, k=1)[0]
+                
+                balanced_segments.append(video_segment_lists[chosen_video][i])
+            
+            # Shuffle finale per randomizzare l'ordine
+            random.shuffle(balanced_segments)
+            self.shuffled_order = balanced_segments
 
     def generate_schedule(self):
         schedule = []
         current_time = 0
-        schedule.append("SCALETTA VIDEO MULTI-MIX\n")
+        schedule.append("SCALETTA VIDEO MULTI-MIX (FINO A 4 VIDEO)\n")
         
         video_stats = {}
         for segment in self.shuffled_order:
@@ -116,8 +145,10 @@ class MultiVideoShuffler:
         schedule.append("STATISTICHE:")
         for video_id, stats in video_stats.items():
             video_name = next((s['video_name'] for s in self.all_segments if s['video_id'] == video_id), f"Video {video_id}")
-            schedule.append(f"    {video_name}: {stats['count']} segmenti, {self.format_duration(stats['total_duration'])}")
+            percentage = (stats['total_duration'] / sum(s['total_duration'] for s in video_stats.values())) * 100
+            schedule.append(f"    {video_name}: {stats['count']} segmenti, {self.format_duration(stats['total_duration'])} ({percentage:.1f}%)")
         
+        schedule.append(f"\nTOTALE VIDEO UTILIZZATI: {len(video_stats)}")
         schedule.append("\nSEQUENZA FINALE:")
         
         for i, segment in enumerate(self.shuffled_order):
@@ -209,7 +240,9 @@ class MultiVideoShuffler:
                 
                 # ELEMENTI SECONDARI DEL COLLAGE
                 if all_segment_dicts and len(all_segment_dicts) > 1:
-                    num_secondary_overlays = random.randint(2, 4)
+                    # Più overlay se abbiamo più video
+                    num_videos = len(set(s['video_id'] for s in all_segment_dicts))
+                    num_secondary_overlays = random.randint(2, min(6, 2 + num_videos))
                     
                     for overlay_idx in range(num_secondary_overlays):
                         try:
@@ -443,9 +476,9 @@ class MultiVideoShuffler:
 
 # --- STREAMLIT UI ---
 def main():
-    st.set_page_config(page_title="VideoDecomposer Multi-Mix by loop507", layout="wide")
-    st.title("VideoDecomposer Multi-Mix by loop507")
-    st.subheader("Mescola segmenti da più video con effetti collage dinamici!")
+    st.set_page_config(page_title="VideoDecomposer Multi-Mix PRO by loop507", layout="wide")
+    st.title("VideoDecomposer Multi-Mix PRO by loop507")
+    st.subheader("Mescola segmenti da 1 a 4 video con effetti collage dinamici!")
 
     # Inizializza session state
     if 'current_progress_single_video' not in st.session_state:
@@ -456,7 +489,7 @@ def main():
     # Scelta modalità
     mode = st.radio(
         "Scegli modalità:",
-        ["Single Video (classico)", "Multi Video Mix"],
+        ["Single Video (classico)", "Multi Video Mix (2-4 video)"],
         horizontal=True
     )
 
@@ -466,35 +499,49 @@ def main():
         handle_multi_video_mode()
 
     # Guida
-    with st.expander("📖 Come funziona - VERSIONE COLLAGE DINAMICO"):
+    with st.expander("📖 Come funziona - VERSIONE MULTI-VIDEO PRO"):
         st.markdown("""
-        ## VideoDecomposer Multi-Mix - Guida Completa (COLLAGE DINAMICO)
+        ## VideoDecomposer Multi-Mix PRO - Guida Completa
         
-        ### **🎨 Effetti Collage:**
+        ### **🎯 Novità Versione PRO:**
+        - **Fino a 4 video contemporaneamente** (flessibile da 1 a 4)
+        - **Controllo pesi intelligente** per bilanciare la presenza di ogni video
+        - **Collage multi-sorgente** con overlay da tutti i video caricati
+        - **Statistiche avanzate** con percentuali di utilizzo
+        
+        ### **🎨 Effetti Collage Multi-Video:**
         - **Collage Dinamico**: Il frame principale viene ridimensionato e posizionato casualmente
-        - **Elementi Secondari**: 2-4 overlay per ogni segmento principale
-        - **Forme Casuali**: Quadrati, rettangoli orizzontali/verticali, panoramici
-        - **Trasparenza**: Frame principale 95% opaco, overlay 70% trasparenti
-        - **Posizioni Random**: Tutti gli elementi sono posizionati casualmente
+        - **Elementi Multi-Sorgente**: 2-6 overlay per segmento (più video = più overlay)
+        - **Forme Artistiche**: Quadrati, rettangoli, panoramici con aspect ratio variabili
+        - **Trasparenza Stratificata**: Frame principale 95%, overlay 70%
+        - **Posizionamento Intelligente**: Distribuzione casuale non sovrapposta
         
-        ### **📋 Modalità Multi-Video:**
-        1. Carica 2 video (MP4, MOV, AVI, MKV)
-        2. Imposta durata segmenti (2-5 secondi consigliati)
-        3. Regola Mix Ratio per bilanciare i video
-        4. Attiva "Collage Dinamico" per gli effetti artistici
-        5. Genera il Multi-Mix
+        ### **📋 Modalità Multi-Video PRO:**
+        1. Carica da 2 a 4 video (MP4, MOV, AVI, MKV)
+        2. Imposta durata segmenti (1-5 secondi per effetti diversi)
+        3. Regola i pesi per bilanciare la presenza di ogni video
+        4. Attiva "Collage Dinamico" per effetti artistici avanzati
+        5. Genera il Multi-Mix PRO
         
-        ### **⚙️ Parametri:**
+        ### **⚙️ Parametri Avanzati:**
         - **Seed**: Numero per risultati riproducibili
-        - **FPS**: Controlla fotogrammi al secondo
-        - **Mix Ratio**: 0.5 = 50%/50%, 0.3 = 30%/70%
-        - **Durata Segmenti**: Più brevi = più dinamico
+        - **FPS**: Controlla fotogrammi al secondo (15-60)
+        - **Pesi Video**: Controllo percentuale presenza (es. 40%-30%-20%-10%)
+        - **Durata Segmenti**: 1s=frenetico, 3s=dinamico, 5s=fluido
         
-        ### **💡 Tips:**
-        - Video troppo lunghi possono causare problemi di memoria
-        - MP4/H.264 sono i formati più affidabili
-        - Segmenti 2-3 secondi per effetto frenetico
-        - Chiudi altre app per liberare RAM
+        ### **💡 Tips PRO:**
+        - **2 video**: Mix classico bilanciato
+        - **3 video**: Effetti collage più complessi
+        - **4 video**: Massima varietà artistica
+        - Segmenti 1-2s per effetto hypercut
+        - Segmenti 3-4s per storytelling dinamico
+        - MP4/H.264 garantiscono massima compatibilità
+        
+        ### **🚀 Prestazioni:**
+        - Video HD: segmenti 2-3s consigliati
+        - Video 4K: segmenti 3-5s per evitare overload
+        - RAM: almeno 8GB per 4 video simultanei
+        - Storage: prevedi 2-5x la dimensione originale
         """)
 
 def handle_single_video_mode():
@@ -550,344 +597,333 @@ def handle_single_video_mode():
             st.error(f"Errore lettura video: {str(e)}")
 
 def handle_multi_video_mode():
-    st.markdown("### 📹 Carica i tuoi video per il mix artistico")
+    st.markdown("### 📹 Carica da 2 a 4 video per il mix artistico")
     
-    col1, col2 = st.columns(2)
+    # Upload fino a 4 video
+    video_slots = {}
+    video_names = ["Primo", "Secondo", "Terzo", "Quarto"]
+    video_keys = ["video1", "video2", "video3", "video4"]
     
-    with col1:
-        st.markdown("#### Video 1")
-        video1 = st.file_uploader("Primo video", type=["mp4", "mov", "avi", "mkv"], key="video1")
-        
-    with col2:
-        st.markdown("#### Video 2")
-        video2 = st.file_uploader("Secondo video", type=["mp4", "mov", "avi", "mkv"], key="video2")
+    cols = st.columns(2)
+    
+    for i, (name, key) in enumerate(zip(video_names, video_keys)):
+        with cols[i % 2]:
+            if i < 2:
+                st.markdown(f"#### Video {i+1} {'*(obbligatorio)*' if i < 2 else '*(opzionale)*'}")
+            else:
+                st.markdown(f"#### Video {i+1} *(opzionale)*")
+            
+            video_slots[key] = st.file_uploader(
+                f"{name} video", 
+                type=["mp4", "mov", "avi", "mkv"], 
+                key=key,
+                help=f"Carica il {name.lower()} video" + (" (opzionale)" if i >= 2 else "")
+            )
 
-    if video1 and video2:
-        process_multi_video_upload(video1, video2)
-    elif video1 or video2:
-        st.info("Carica entrambi i video per procedere con il Multi-Mix.")
+    # Conta video caricati
+    uploaded_videos = {k: v for k, v in video_slots.items() if v is not None}
+    num_videos = len(uploaded_videos)
+    
+    # Info stato
+    if num_videos == 0:
+        st.info("🔤 Carica almeno 2 video per creare un Multi-Mix PRO!")
+    elif num_videos == 1:
+        st.warning("⚠️ Carica almeno un secondo video per il Multi-Mix.")
     else:
-        st.info("Carica due video per creare un Multi-Mix artistico!")
-
-def process_single_video(uploaded_video, input_path, total_duration, segment_input, seed_input, custom_fps, fps_value, enable_overlay):
-    try:
-        segment_duration = float(segment_input)
+        st.success(f"✅ {num_videos} video caricati - Pronto per Multi-Mix PRO!")
         
-        if segment_duration <= 0 or segment_duration >= total_duration:
-            st.error("Durata segmento non valida o troppo grande rispetto alla durata totale del video.")
-        else:
-            shuffler = MultiVideoShuffler()
-            shuffler.add_video("V1", uploaded_video.name, total_duration, segment_duration)
-            
-            seed = int(seed_input) if seed_input.isdigit() else None
-            shuffler.shuffle_all_segments(seed)
+        if num_videos >= 2:
+            process_multi_video_upload(uploaded_videos)
 
-            st.subheader("📋 Scaletta generata")
-            st.code(shuffler.generate_schedule())
+def process_single_video(uploaded_video, input_path, total_duration, segment
+_input, seed_input, custom_fps, fps_value, enable_overlay):
+   try:
+       segment_duration = float(segment_input)
+       if segment_duration <= 0:
+           st.error("La durata del segmento deve essere positiva!")
+           return
+   except ValueError:
+       st.error("Inserisci un numero valido per la durata del segmento!")
+       return
 
-            if MOVIEPY_AVAILABLE:
-                output_filename = f"remix_collage_{os.path.splitext(uploaded_video.name)[0]}.mp4" if enable_overlay else f"remix_{os.path.splitext(uploaded_video.name)[0]}.mp4" 
-                output_path = os.path.join(tempfile.gettempdir(), output_filename)
-                
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                st.session_state.current_progress_single_video = 0 
+   # Crea shuffler
+   shuffler = MultiVideoShuffler()
+   
+   # Aggiungi video
+   num_segments = shuffler.add_video("video1", uploaded_video.name, total_duration, segment_duration)
+   st.info(f"Video diviso in {num_segments} segmenti da ~{segment_duration}s")
+   
+   # Shuffle
+   seed = int(seed_input) if seed_input.strip() else None
+   shuffler.shuffle_all_segments(seed=seed)
+   
+   # Mostra scaletta
+   schedule = shuffler.generate_schedule()
+   st.text_area("📋 Scaletta generata:", schedule, height=200)
+   
+   # Progress bar
+   progress_bar = st.progress(0)
+   status_text = st.empty()
+   
+   def update_progress_single(message):
+       st.session_state.current_progress_single_video = min(st.session_state.current_progress_single_video + 10, 90)
+       progress_bar.progress(st.session_state.current_progress_single_video)
+       status_text.text(message)
+   
+   # Processa
+   temp_dir = tempfile.gettempdir()
+   output_filename = f"shuffled_{os.path.splitext(uploaded_video.name)[0]}.mp4"
+   output_path = os.path.join(temp_dir, output_filename)
+   
+   fps = fps_value if custom_fps else None
+   
+   success, result = shuffler.process_videos(
+       {"video1": input_path}, 
+       output_path, 
+       progress_callback=update_progress_single,
+       fps=fps,
+       enable_overlay=enable_overlay
+   )
+   
+   if success:
+       progress_bar.progress(100)
+       status_text.text("✅ Completato!")
+       st.session_state.current_progress_single_video = 0
+       
+       st.success("🎉 Video elaborato con successo!")
+       
+       # Download
+       with open(output_path, "rb") as f:
+           st.download_button(
+               label="⬇️ Scarica video mescolato",
+               data=f.read(),
+               file_name=output_filename,
+               mime="video/mp4",
+               use_container_width=True
+           )
+       
+       # Preview
+       st.video(output_path)
+       
+   else:
+       st.error(f"❌ Errore nell'elaborazione: {result}")
+       st.session_state.current_progress_single_video = 0
 
-                def progress_callback(message):
-                    status_text.text(f"⏳ {message}")
-                    st.session_state.current_progress_single_video = min(90, st.session_state.current_progress_single_video + 5) 
-                    progress_bar.progress(st.session_state.current_progress_single_video) 
-                
-                video_paths = {"V1": input_path}
-                fps_param = fps_value if custom_fps else None
-                
-                with st.spinner("🎬 Creazione video remix in corso..."):
-                    success, result = shuffler.process_videos(
-                        video_paths, output_path, progress_callback, 
-                        fps=fps_param, enable_overlay=enable_overlay
-                    )
-                
-                progress_bar.progress(100)
-                
-                if success:
-                    st.success("✅ Video remixato completato!")
-                    if os.path.exists(result):
-                        file_size = os.path.getsize(result) / (1024 * 1024)
-                        st.info(f"📁 File generato: {file_size:.2f} MB")
-                        with open(result, "rb") as f:
-                            st.download_button(
-                                "⬇️ Scarica video remixato",
-                                f.read(),
-                                file_name=output_filename,
-                                mime="video/mp4",
-                                use_container_width=True
-                            )
-                    else:
-                        st.error("File di output non trovato. Si prega di riprovare.")
-                else:
-                    st.error(f"❌ Errore durante l'elaborazione: {result}")
-                
-                status_text.empty()
-            else:
-                st.warning("MoviePy non disponibile - Solo simulazione della scaletta.")
-                
-    except ValueError:
-        st.error("Inserisci valori numerici validi per la durata dei segmenti o il seed.")
-    except Exception as e:
-        st.error(f"Errore imprevisto: {str(e)}")
+def process_multi_video_upload(uploaded_videos):
+   # Salva file temporanei e ottieni durate
+   temp_dir = tempfile.gettempdir()
+   video_paths = {}
+   video_durations = {}
+   total_combined_duration = 0
+   
+   with st.spinner("📥 Caricamento e analisi video..."):
+       for key, video_file in uploaded_videos.items():
+           temp_filename = f"multi_{key}_{os.path.basename(video_file.name)}"
+           temp_path = os.path.join(temp_dir, temp_filename)
+           
+           with open(temp_path, "wb") as f:
+               f.write(video_file.read())
+           
+           video_paths[key] = temp_path
+           
+           # Ottieni durata
+           if MOVIEPY_AVAILABLE:
+               try:
+                   with VideoFileClip(temp_path) as clip:
+                       duration = clip.duration
+                       video_durations[key] = duration
+                       total_combined_duration += duration
+               except Exception as e:
+                   st.error(f"Errore lettura {video_file.name}: {e}")
+                   return
+           else:
+               # Simulazione
+               video_durations[key] = 60
+               total_combined_duration += 60
+   
+   # Mostra info video caricati
+   st.markdown("### 📊 Video caricati:")
+   
+   video_info_cols = st.columns(len(uploaded_videos))
+   for i, (key, video_file) in enumerate(uploaded_videos.items()):
+       with video_info_cols[i]:
+           duration = video_durations[key]
+           st.metric(
+               label=f"Video {i+1}",
+               value=f"{duration:.1f}s",
+               delta=video_file.name
+           )
+   
+   st.info(f"🎬 Durata totale combinata: {total_combined_duration:.1f} secondi")
+   
+   # Parametri Multi-Mix
+   with st.form("multi_params_form"):
+       st.markdown("### ⚙️ Configurazione Multi-Mix PRO")
+       
+       col1, col2 = st.columns(2)
+       
+       with col1:
+           segment_input = st.text_input("Durata segmenti (secondi)", "3")
+           seed_input = st.text_input("Seed (opzionale)", "", help="Per risultati riproducibili")
+           
+           custom_fps = st.checkbox("FPS personalizzato")
+           fps_value = st.number_input("FPS:", min_value=15, max_value=60, value=30, disabled=not custom_fps)
+       
+       with col2:
+           st.markdown("**🎯 Pesi video (distribuzione %):**")
+           video_weights = {}
+           total_weight = 0
+           
+           for i, (key, video_file) in enumerate(uploaded_videos.items()):
+               default_weight = 100 // len(uploaded_videos)
+               if i == 0:  # Aggiusta il primo per arrivare a 100
+                   default_weight = 100 - (default_weight * (len(uploaded_videos) - 1))
+               
+               weight = st.slider(
+                   f"Video {i+1} ({video_file.name[:20]}...)",
+                   min_value=5,
+                   max_value=70,
+                   value=default_weight,
+                   help=f"Percentuale di presenza del video {i+1}"
+               )
+               video_weights[key] = weight / 100.0
+               total_weight += weight
+           
+           if abs(total_weight - 100) > 5:
+               st.warning(f"⚠️ Somma pesi: {total_weight}% (consigliato: ~100%)")
+       
+       st.markdown("**🎨 Effetti Artistici Multi-Video:**")
+       enable_overlay = st.checkbox(
+           "Abilita Collage Dinamico Multi-Sorgente", 
+           value=True,
+           help="Crea collage artistici usando elementi da tutti i video caricati simultaneamente."
+       )
+       
+       if enable_overlay:
+           st.info("🎭 Ogni segmento avrà 2-6 overlay casuali da tutti i video, creando un collage artistico dinamico!")
+       
+       submitted = st.form_submit_button("🚀 Crea Multi-Mix PRO", use_container_width=True)
 
-def process_multi_video_upload(video1, video2):
-    temp_dir = tempfile.gettempdir()
-    
-    # Salva i file temporanei
-    video1_filename = f"multi_video1_{os.path.basename(video1.name)}"
-    video2_filename = f"multi_video2_{os.path.basename(video2.name)}"
-    video1_path = os.path.join(temp_dir, video1_filename)
-    video2_path = os.path.join(temp_dir, video2_filename)
-    
-    with open(video1_path, "wb") as f:
-        f.write(video1.read())
-    with open(video2_path, "wb") as f:
-        f.write(video2.read())
+   if submitted:
+       process_multi_video_creation(
+           uploaded_videos, video_paths, video_durations, 
+           segment_input, seed_input, video_weights,
+           custom_fps, fps_value, enable_overlay
+       )
 
-    try:
-        # Ottieni durate video
-        durations = {}
-        if MOVIEPY_AVAILABLE:
-            with VideoFileClip(video1_path) as clip1:
-                durations["V1"] = clip1.duration
-            with VideoFileClip(video2_path) as clip2:
-                durations["V2"] = clip2.duration
-            
-            st.success(f"✅ Video caricati:")
-            st.write(f"• **{video1.name}**: {round(durations['V1'], 2)} secondi")
-            st.write(f"• **{video2.name}**: {round(durations['V2'], 2)} secondi")
-        else:
-            durations = {"V1": 120, "V2": 90}  # Valori simulati
-            st.warning("MoviePy non disponibile - durate simulate.")
+def process_multi_video_creation(uploaded_videos, video_paths, video_durations, 
+                               segment_input, seed_input, video_weights,
+                               custom_fps, fps_value, enable_overlay):
+   
+   try:
+       segment_duration = float(segment_input)
+       if segment_duration <= 0:
+           st.error("La durata del segmento deve essere positiva!")
+           return
+   except ValueError:
+       st.error("Inserisci un numero valido per la durata del segmento!")
+       return
 
-        # Anteprima video
-        col1, col2 = st.columns(2)
-        with col1:
-            st.video(video1_path)
-        with col2:
-            st.video(video2_path)
-
-        # Form parametri multi-video
-        with st.form("multi_params_form"):
-            st.markdown("### ⚙️ Parametri Multi-Mix")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                segment_input = st.text_input("Durata segmenti (sec)", "2.5", help="Segmenti più brevi = mix più dinamico")
-                seed_input = st.text_input("Seed (opzionale)", "", help="Per risultati riproducibili")
-                
-            with col2:
-                mix_ratio = st.slider(
-                    "Mix Ratio", 
-                    min_value=0.1, 
-                    max_value=0.9, 
-                    value=0.5, 
-                    step=0.1,
-                    help=f"0.5 = 50%/50%, 0.3 = più {video2.name}"
-                )
-                custom_fps = st.checkbox("FPS personalizzato")
-                
-            with col3:
-                fps_value = st.number_input("FPS:", min_value=15, max_value=60, value=24, disabled=not custom_fps)
-                st.write(f"**Rapporto previsto:**")
-                st.write(f"• {video1.name}: {int(mix_ratio*100)}%")
-                st.write(f"• {video2.name}: {int((1-mix_ratio)*100)}%")
-            
-            st.markdown("---")
-            st.markdown("**🎨 Effetti Artistici Avanzati:**")
-            
-            enable_overlay = st.checkbox(
-                "🎭 Abilita Collage Dinamico Multi-Video", 
-                value=True,
-                help="Crea un collage artistico con elementi sovrapposti da entrambi i video"
-            )
-            
-            if enable_overlay:
-                st.info("🌟 **Collage Attivo:** I segmenti principali verranno mescolati con overlay casuali dall'altro video!")
-                
-                col_effect1, col_effect2 = st.columns(2)
-                with col_effect1:
-                    st.markdown("**Effetti inclusi:**")
-                    st.write("• Ridimensionamento dinamico")
-                    st.write("• Posizionamento casuale")
-                    st.write("• Overlay multipli (2-4 per segmento)")
-                    
-                with col_effect2:
-                    st.markdown("**Forme artistiche:**")
-                    st.write("• Quadrati piccoli/medi")
-                    st.write("• Rettangoli orizzontali/verticali")
-                    st.write("• Panoramici allungati")
-            else:
-                st.warning("⚠️ Collage disabilitato - verrà usata concatenazione normale")
-            
-            submitted = st.form_submit_button("🚀 Genera Multi-Mix Collage", use_container_width=True)
-
-        if submitted:
-            process_multi_video_generation(
-                video1, video2, video1_path, video2_path, durations,
-                segment_input, seed_input, mix_ratio, custom_fps, fps_value, enable_overlay
-            )
-            
-    except Exception as e:
-        st.error(f"Errore durante il caricamento dei video: {str(e)}")
-
-def process_multi_video_generation(video1, video2, video1_path, video2_path, durations, 
-                                 segment_input, seed_input, mix_ratio, custom_fps, fps_value, enable_overlay):
-    try:
-        segment_duration = float(segment_input)
-        
-        if segment_duration <= 0:
-            st.error("La durata dei segmenti deve essere positiva.")
-            return
-            
-        # Crea shuffler
-        shuffler = MultiVideoShuffler()
-        
-        # Aggiungi video
-        num_segments_v1 = shuffler.add_video("V1", video1.name, durations["V1"], segment_duration)
-        num_segments_v2 = shuffler.add_video("V2", video2.name, durations["V2"], segment_duration)
-        
-        st.write(f"📊 **Segmenti generati:** {video1.name} = {num_segments_v1}, {video2.name} = {num_segments_v2}")
-        
-        # Mescola segmenti
-        seed = int(seed_input) if seed_input.isdigit() else None
-        shuffler.shuffle_all_segments(seed, mix_ratio)
-
-        # Mostra scaletta
-        st.subheader("📋 Scaletta Multi-Mix generata")
-        schedule = shuffler.generate_schedule()
-        st.code(schedule, language="text")
-        
-        # Salva scaletta
-        schedule_filename = f"scaletta_multimix_{video1.name}_{video2.name}.txt"
-        st.download_button(
-            "📄 Scarica Scaletta",
-            schedule,
-            file_name=schedule_filename,
-            mime="text/plain"
-        )
-
-        # Elaborazione video
-        if MOVIEPY_AVAILABLE:
-            st.markdown("---")
-            st.subheader("🎬 Elaborazione Video Multi-Mix")
-            
-            # Nome file output
-            if enable_overlay:
-                output_filename = f"multimix_collage_{os.path.splitext(video1.name)[0]}_{os.path.splitext(video2.name)[0]}.mp4"
-            else:
-                output_filename = f"multimix_{os.path.splitext(video1.name)[0]}_{os.path.splitext(video2.name)[0]}.mp4"
-                
-            output_path = os.path.join(tempfile.gettempdir(), output_filename)
-            
-            # Progress tracking
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            st.session_state.current_progress_multi_video = 0
-
-            def progress_callback(message):
-                status_text.text(f"⏳ {message}")
-                st.session_state.current_progress_multi_video = min(95, st.session_state.current_progress_multi_video + 3)
-                progress_bar.progress(st.session_state.current_progress_multi_video)
-            
-            # Parametri video
-            video_paths = {"V1": video1_path, "V2": video2_path}
-            fps_param = fps_value if custom_fps else None
-            
-            # Elaborazione
-            with st.spinner("🎭 Creazione Multi-Mix con effetti collage..."):
-                success, result = shuffler.process_videos(
-                    video_paths, output_path, progress_callback, 
-                    fps=fps_param, enable_overlay=enable_overlay
-                )
-            
-            progress_bar.progress(100)
-            status_text.empty()
-            
-            if success:
-                st.success("🎉 **Multi-Mix Collage completato con successo!**")
-                
-                if os.path.exists(result):
-                    file_size = os.path.getsize(result) / (1024 * 1024)
-                    
-                    # Info risultato
-                    st.markdown("### 📈 Statistiche Finali")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Dimensione File", f"{file_size:.2f} MB")
-                    with col2:
-                        total_segments = len(shuffler.shuffled_order)
-                        st.metric("Segmenti Totali", total_segments)
-                    with col3:
-                        if enable_overlay:
-                            estimated_overlays = total_segments * 3  # Media overlay per segmento
-                            st.metric("Overlay Stimati", estimated_overlays)
-                        else:
-                            st.metric("Tipo", "Standard")
-                    
-                    # Anteprima risultato
-                    if file_size < 50:  # Solo se il file non è troppo grande
-                        st.video(result)
-                    else:
-                        st.warning("File troppo grande per l'anteprima, usa il download.")
-                    
-                    # Download
-                    with open(result, "rb") as f:
-                        st.download_button(
-                            "⬇️ Scarica Multi-Mix Collage",
-                            f.read(),
-                            file_name=output_filename,
-                            mime="video/mp4",
-                            use_container_width=True
-                        )
-                        
-                    # Statistiche dettagliate
-                    with st.expander("📊 Statistiche Dettagliate"):
-                        video_stats = {}
-                        for segment in shuffler.shuffled_order:
-                            video_id = segment['video_id']
-                            if video_id not in video_stats:
-                                video_stats[video_id] = {'count': 0, 'total_duration': 0}
-                            video_stats[video_id]['count'] += 1
-                            video_stats[video_id]['total_duration'] += segment['duration']
-                        
-                        for video_id, stats in video_stats.items():
-                            video_name = video1.name if video_id == "V1" else video2.name
-                            percentage = (stats['total_duration'] / sum(s['total_duration'] for s in video_stats.values())) * 100
-                            
-                            st.write(f"**{video_name}:**")
-                            st.write(f"  • Segmenti utilizzati: {stats['count']}")
-                            st.write(f"  • Durata totale: {stats['total_duration']:.1f}s")
-                            st.write(f"  • Percentuale finale: {percentage:.1f}%")
-                            
-                else:
-                    st.error("❌ File di output non trovato dopo l'elaborazione.")
-            else:
-                st.error(f"❌ Errore durante l'elaborazione: {result}")
-                st.write("💡 **Suggerimenti per risolvere:**")
-                st.write("• Prova con video più corti")
-                st.write("• Usa segmenti più lunghi (3-5 secondi)")
-                st.write("• Disabilita il collage se hai problemi di memoria")
-                st.write("• Assicurati che i video siano in formato MP4/H.264")
-        else:
-            st.warning("🔧 MoviePy non disponibile - mostrata solo la scaletta.")
-            
-    except ValueError:
-        st.error("❌ Inserisci valori numerici validi per la durata dei segmenti.")
-    except Exception as e:
-        st.error(f"❌ Errore imprevisto: {str(e)}")
-        import traceback
-        with st.expander("🔍 Dettagli errore (per debug)"):
-            st.code(traceback.format_exc())
+   # Crea shuffler multi-video
+   shuffler = MultiVideoShuffler()
+   
+   # Aggiungi tutti i video
+   total_segments = 0
+   for key, video_file in uploaded_videos.items():
+       duration = video_durations[key]
+       num_segments = shuffler.add_video(key, video_file.name, duration, segment_duration)
+       total_segments += num_segments
+       st.info(f"📹 {video_file.name}: {num_segments} segmenti da ~{segment_duration}s")
+   
+   st.success(f"🎯 Totale: {total_segments} segmenti da {len(uploaded_videos)} video")
+   
+   # Shuffle con pesi
+   seed = int(seed_input) if seed_input.strip() else None
+   shuffler.shuffle_all_segments(seed=seed, video_weights=video_weights)
+   
+   # Mostra scaletta
+   schedule = shuffler.generate_schedule()
+   with st.expander("📋 Visualizza scaletta completa", expanded=False):
+       st.text_area("Scaletta Multi-Mix PRO:", schedule, height=300)
+   
+   # Progress bar
+   progress_bar = st.progress(0)
+   status_text = st.empty()
+   
+   def update_progress_multi(message):
+       st.session_state.current_progress_multi_video = min(st.session_state.current_progress_multi_video + 5, 90)
+       progress_bar.progress(st.session_state.current_progress_multi_video)
+       status_text.text(message)
+   
+   # Nome output
+   video_names = [v.name for v in uploaded_videos.values()]
+   output_filename = f"MultiMix_PRO_{len(uploaded_videos)}videos_{segment_duration}s.mp4"
+   
+   temp_dir = tempfile.gettempdir()
+   output_path = os.path.join(temp_dir, output_filename)
+   
+   fps = fps_value if custom_fps else None
+   
+   # Processa
+   with st.spinner("🎬 Creazione Multi-Mix PRO in corso..."):
+       success, result = shuffler.process_videos(
+           video_paths, 
+           output_path, 
+           progress_callback=update_progress_multi,
+           fps=fps,
+           enable_overlay=enable_overlay
+       )
+   
+   if success:
+       progress_bar.progress(100)
+       status_text.text("✅ Multi-Mix PRO completato!")
+       st.session_state.current_progress_multi_video = 0
+       
+       st.success("🎉 Multi-Mix PRO creato con successo!")
+       
+       # Statistiche finali
+       final_stats = shuffler.generate_schedule().split('\n')
+       stats_section = []
+       in_stats = False
+       for line in final_stats:
+           if line.startswith("STATISTICHE:"):
+               in_stats = True
+           elif line.startswith("TOTALE VIDEO UTILIZZATI:"):
+               stats_section.append(line)
+               break
+           elif in_stats and line.strip():
+               stats_section.append(line)
+       
+       if stats_section:
+           st.markdown("### 📈 Statistiche finali:")
+           for stat in stats_section:
+               st.text(stat)
+       
+       # Download
+       with open(output_path, "rb") as f:
+           st.download_button(
+               label="⬇️ Scarica Multi-Mix PRO",
+               data=f.read(),
+               file_name=output_filename,
+               mime="video/mp4",
+               use_container_width=True
+           )
+       
+       # Preview
+       st.video(output_path)
+       
+       # Suggerimenti
+       st.markdown("### 💡 Prossimi passi:")
+       st.info("""
+       - 🎨 Prova diversi pesi per cambiare l'equilibrio tra i video
+       - 🔀 Cambia il seed per ottenere sequenze diverse
+       - ⏱️ Sperimenta con durate segmenti diverse (1-5s)
+       - 🎭 Disabilita/abilita il collage per effetti diversi
+       """)
+       
+   else:
+       st.error(f"❌ Errore nell'elaborazione Multi-Mix: {result}")
+       st.session_state.current_progress_multi_video = 0
 
 if __name__ == "__main__":
-    main()
+   main()

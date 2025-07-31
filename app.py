@@ -157,13 +157,16 @@ class MultiVideoShuffler:
                 end_time = min(segment['end'], video_clip_source.duration)
                 
                 try:
+                    # Tenta di estrarre il clip
                     clip = video_clip_source.subclip(segment['start'], end_time)
                     if fps and fps != clip.fps:
                         clip = clip.set_fps(fps)
                     extracted_clips_for_final_sequence.append(clip)
                     if progress_callback:
                         progress_callback(f"Estratti {len(extracted_clips_for_final_sequence)}/{len(self.shuffled_order)} segmenti")
-                except Exception:
+                except Exception as e:
+                    # Se fallisce, avvisa ma continua l'elaborazione
+                    st.warning(f"⚠️ **Errore durante l'estrazione del segmento {i+1}: {e}** - Il segmento verrà saltato.")
                     continue
 
             if not extracted_clips_for_final_sequence:

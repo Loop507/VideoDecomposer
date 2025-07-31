@@ -6,6 +6,8 @@ import moviepy
 import traceback
 from moviepy.editor import VideoFileClip, concatenate_videoclips, CompositeVideoClip, vfx, TextClip
 import numpy as np
+from PIL import Image
+Image.ANTIALIAS = Image.Resampling.LANCZOS
 MOVIEPY_AVAILABLE = False
 try:
     if moviepy.__version__:
@@ -403,32 +405,34 @@ def handle_single_video_mode(uploaded_video):
     st.subheader(f"Video caricato: **{uploaded_video.name}**")
     st.video(input_path, width=250)
     st.metric("Durata totale", f"{total_duration:.2f} secondi")
+    st.markdown("### ⚙️ Parametri di Elaborazione")
+    col1, col2 = st.columns(2)
+    with col1:
+        set_custom_fps = st.checkbox("Frequenza dei fotogrammi (FPS) personalizzata", help="Spunta per inserire un valore di FPS specifico. Altrimenti, verrà usato l'FPS del video originale.")
+    with col2:
+        fps_value = st.number_input("FPS:", min_value=1, max_value=60, value=30, disabled=not set_custom_fps)
+    custom_duration_enabled = st.checkbox("Imposta durata video finale (Opzionale)", help="Spunta per impostare una durata specifica in secondi. Altrimenti, la durata sarà la somma dei segmenti.")
+    custom_duration_input = st.number_input(
+        "Durata video finale (secondi)",
+        min_value=1,
+        value=60,
+        disabled=not custom_duration_enabled
+    )
+    st.markdown("---")
+    st.markdown("**🎨 Effetti Artistici (Collage Dinamico):**")
+    enable_overlay = st.checkbox(
+        "Abilita effetto collage dinamico", 
+        help="Il video principale diventa parte del collage con elementi secondari sovrapposti.",
+        key="single_overlay_check"
+    )
+    if enable_overlay:
+        st.info("🎭 I frame verranno mescolati in un collage con forme e dimensioni casuali!")
     with st.form("single_params_form"):
-        st.markdown("### ⚙️ Parametri di Elaborazione")
         col1, col2 = st.columns(2)
         with col1:
             segment_input = st.text_input("Durata segmenti (secondi)", "3")
-            seed_input = st.text_input("Seed (opzionale)", "", help="Stesso seed = stesso ordine!")
         with col2:
-            set_custom_fps = st.checkbox("Frequenza dei fotogrammi (FPS) personalizzata", help="Abilita per impostare un valore di FPS specifico.")
-            fps_value = st.number_input("FPS:", min_value=1, max_value=60, value=30, disabled=not set_custom_fps)
-        st.markdown("---")
-        custom_duration_enabled = st.checkbox("Imposta durata video finale (Opzionale)", help="Seleziona per impostare una durata specifica in secondi.")
-        custom_duration_input = st.number_input(
-            "Durata video finale (secondi)",
-            min_value=1,
-            value=60,
-            disabled=not custom_duration_enabled
-        )
-        st.markdown("---")
-        st.markdown("**🎨 Effetti Artistici (Collage Dinamico):**")
-        enable_overlay = st.checkbox(
-            "Abilita effetto collage dinamico", 
-            help="Il video principale diventa parte del collage con elementi secondari sovrapposti.",
-            key="single_overlay_check"
-        )
-        if enable_overlay:
-            st.info("🎭 I frame verranno mescolati in un collage con forme e dimensioni casuali!")
+            seed_input = st.text_input("Seed (opzionale)", "", help="Stesso seed = stesso ordine!")
         submitted = st.form_submit_button("🚀 Avvia elaborazione", use_container_width=True)
     if submitted:
         process_single_video(
@@ -477,45 +481,47 @@ def process_multi_video_upload(uploaded_videos):
     for i, video in enumerate(uploaded_videos):
         with cols_preview[i]:
             st.video(video_paths[f"V{i+1}"], width=250)
+    st.markdown("### ⚙️ Parametri Multi-Mix")
+    col1, col2 = st.columns(2)
+    with col1:
+        set_custom_fps = st.checkbox("Frequenza dei fotogrammi (FPS) personalizzata", help="Spunta per inserire un valore di FPS specifico. Altrimenti, verrà usato l'FPS del video originale.")
+    with col2:
+        fps_value = st.number_input("FPS:", min_value=15, max_value=60, value=24, disabled=not set_custom_fps)
+    custom_duration_enabled = st.checkbox("Imposta durata video finale (Opzionale)", help="Spunta per impostare una durata specifica in secondi. Altrimenti, la durata sarà la somma dei segmenti.")
+    custom_duration_input = st.number_input(
+        "Durata video finale (secondi)",
+        min_value=1,
+        value=60,
+        disabled=not custom_duration_enabled
+    )
+    st.markdown("---")
+    st.markdown("**🎨 Effetti Artistici Avanzati:**")
+    enable_overlay = st.checkbox(
+        "🎭 Abilita Collage Dinamico Multi-Video",
+        value=True,
+        help="Crea un collage artistico con elementi sovrapposti da tutti i video"
+    )
+    if enable_overlay:
+        st.info("🌟 **Collage Attivo:** I segmenti principali verranno mescolati con overlay casuali da tutti i video!")
+        col_effect1, col_effect2 = st.columns(2)
+        with col_effect1:
+            st.markdown("**Effetti inclusi:**")
+            st.write("• Ridimensionamento dinamico")
+            st.write("• Posizionamento casuale")
+            st.write("• Overlay multipli (2-4 per segmento)")
+        with col_effect2:
+            st.markdown("**Forme artistiche:**")
+            st.write("• Quadrati piccoli/medi")
+            st.write("• Rettangoli orizzontali/verticali")
+            st.write("• Panoramici allungati")
+    else:
+        st.warning("⚠️ Collage disabilitato - verrà usata concatenazione normale")
     with st.form("multi_params_form"):
-        st.markdown("### ⚙️ Parametri Multi-Mix")
         col1, col2 = st.columns(2)
         with col1:
             segment_input = st.text_input("Durata segmenti (sec)", "2.5", help="Segmenti più brevi = mix più dinamico")
-            seed_input = st.text_input("Seed (opzionale)", "", help="Per risultati riproducibili")
         with col2:
-            set_custom_fps = st.checkbox("Frequenza dei fotogrammi (FPS) personalizzata")
-            fps_value = st.number_input("FPS:", min_value=15, max_value=60, value=24, disabled=not set_custom_fps)
-        st.markdown("---")
-        custom_duration_enabled = st.checkbox("Imposta durata video finale (Opzionale)", help="Seleziona per impostare una durata specifica in secondi.")
-        custom_duration_input = st.number_input(
-            "Durata video finale (secondi)",
-            min_value=1,
-            value=60,
-            disabled=not custom_duration_enabled
-        )
-        st.markdown("---")
-        st.markdown("**🎨 Effetti Artistici Avanzati:**")
-        enable_overlay = st.checkbox(
-            "🎭 Abilita Collage Dinamico Multi-Video",
-            value=True,
-            help="Crea un collage artistico con elementi sovrapposti da tutti i video"
-        )
-        if enable_overlay:
-            st.info("🌟 **Collage Attivo:** I segmenti principali verranno mescolati con overlay casuali da tutti i video!")
-            col_effect1, col_effect2 = st.columns(2)
-            with col_effect1:
-                st.markdown("**Effetti inclusi:**")
-                st.write("• Ridimensionamento dinamico")
-                st.write("• Posizionamento casuale")
-                st.write("• Overlay multipli (2-4 per segmento)")
-            with col_effect2:
-                st.markdown("**Forme artistiche:**")
-                st.write("• Quadrati piccoli/medi")
-                st.write("• Rettangoli orizzontali/verticali")
-                st.write("• Panoramici allungati")
-        else:
-            st.warning("⚠️ Collage disabilitato - verrà usata concatenazione normale")
+            seed_input = st.text_input("Seed (opzionale)", "", help="Per risultati riproducibili")
         submitted = st.form_submit_button("🚀 Genera Multi-Mix Collage", use_container_width=True)
     if submitted:
         process_multi_video_generation(

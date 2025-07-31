@@ -1,4 +1,4 @@
-import streamlit as st
+   import streamlit as st
 import os
 import random
 import tempfile
@@ -97,9 +97,6 @@ class MultiVideoShuffler:
                            overlay_clip = overlay_clip.fx(vfx.resize, newsize=(main_clip.size[0] * size_ratio, main_clip.size[1] * size_ratio))
                         overlay_clip = overlay_clip.set_position(pos).set_opacity(random.uniform(0.5, 0.8))
                         subclips.append(overlay_clip)
-                    text = TextClip(f"Mix Artistico {i+1}", fontsize=30, color='white', bg_color='black', stroke_color='black', stroke_width=2)
-                    text = text.set_duration(0.5).set_position('center').set_opacity(0.8).set_start(segment_duration - 0.5)
-                    subclips.append(text)
                     final_clip_segment = CompositeVideoClip(subclips, size=main_clip.size)
                     final_clips.append(final_clip_segment.set_duration(segment_duration))
                 else:

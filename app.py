@@ -310,20 +310,13 @@ def process_single_video(uploaded_video, input_path, total_duration, segment_inp
         with st.expander("🔍 Dettagli errore (per debug)"):
             st.code(traceback.format_exc())
 
-def process_multi_video_generation(uploaded_videos, video_paths, durations, 
+def process_multi_video_generation(uploaded_videos, valid_video_paths, durations, 
                                  segment_input, seed_input, set_custom_fps, fps_value, enable_overlay, custom_duration_enabled, custom_duration_input):
     try:
         segment_duration = float(segment_input)
         if segment_duration <= 0.1:
             st.error("❌ La durata dei segmenti deve essere maggiore di 0.1 secondi.")
             return
-
-        valid_video_paths = {}
-        for video_id, path in video_paths.items():
-            if video_id in durations:
-                valid_video_paths[video_id] = path
-            else:
-                st.warning(f"⚠️ Video con ID '{video_id}' non ha una durata valida e verrà saltato.")
 
         if len(valid_video_paths) < 2:
             st.error("❌ Non ci sono abbastanza video validi con durate note per creare un mix. Assicurati che i file siano in un formato supportato.")
@@ -520,13 +513,11 @@ def handle_multi_video_mode():
             video = st.file_uploader(f"Video {i+1}", type=["mp4", "mov", "avi", "mkv"], key=f"video_{i+1}")
             if video:
                 uploaded_videos.append(video)
-    
-    if len(uploaded_videos) >= 2:
-        process_multi_video_upload(uploaded_videos)
-    else:
-        st.info("Carica almeno due video per creare un Multi-Mix artistico! (Massimo 4)")
 
-def process_multi_video_upload(uploaded_videos):
+    if not uploaded_videos:
+        st.info("Carica almeno un video per iniziare.")
+        return
+
     temp_dir = tempfile.gettempdir()
     video_paths = {}
     durations = {}
@@ -552,10 +543,11 @@ def process_multi_video_upload(uploaded_videos):
             st.warning("MoviePy non disponibile - durate simulate.")
 
     num_videos = len(uploaded_videos)
-    cols_preview = st.columns(num_videos)
-    for i, video in enumerate(uploaded_videos):
-        with cols_preview[i]:
-            st.video(video_paths[f"V{i+1}"], width=250)
+    if num_videos > 0:
+        cols_preview = st.columns(num_videos)
+        for i, video in enumerate(uploaded_videos):
+            with cols_preview[i]:
+                st.video(video_paths[f"V{i+1}"], width=250)
 
     st.markdown("### ⚙️ Parametri Multi-Mix")
     col1, col2 = st.columns(2)
@@ -606,11 +598,17 @@ def process_multi_video_upload(uploaded_videos):
         submitted = st.form_submit_button("🚀 Genera Multi-Mix Collage", use_container_width=True)
 
     if submitted:
+        valid_video_paths = {}
+        for video_id, path in video_paths.items():
+            if video_id in durations and durations[video_id] > 0:
+                valid_video_paths[video_id] = path
+        
         process_multi_video_generation(
             uploaded_videos, valid_video_paths, durations,
             segment_input, seed_input, set_custom_fps, fps_value, enable_overlay,
             custom_duration_enabled, custom_duration_input
         )
+
 
 def main():
     st.set_page_config(

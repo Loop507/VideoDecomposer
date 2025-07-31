@@ -23,20 +23,31 @@ class MultiVideoShuffler:
         self.shuffled_order = []
         self.video_clips_map = {}
 
-    def add_video(self, video_id, video_name, duration, segment_duration):
+    def add_video(self, video_id, video_name, total_duration, segment_duration):
         """Aggiunge un video e lo segmenta."""
-        if duration <= 0:
+        if total_duration <= 0 or segment_duration <= 0:
             return 0
-        num_segments = int(duration / segment_duration)
+        
+        num_segments = int(total_duration / segment_duration)
+        if total_duration % segment_duration != 0:
+            num_segments += 1
+            
+        added_segments = 0
         for i in range(num_segments):
-            self.all_segments.append({
-                'video_id': video_id,
-                'start': i * segment_duration,
-                'end': min((i + 1) * segment_duration, duration),
-                'source_name': video_name,
-                'duration': segment_duration
-            })
-        return num_segments
+            start_time = i * segment_duration
+            end_time = min((i + 1) * segment_duration, total_duration)
+            
+            # Controllo per evitare segmenti troppo corti
+            if end_time - start_time >= 0.1: 
+                self.all_segments.append({
+                    'video_id': video_id,
+                    'start': start_time,
+                    'end': end_time,
+                    'source_name': video_name,
+                    'duration': end_time - start_time
+                })
+                added_segments += 1
+        return added_segments
 
     def shuffle_all_segments(self, seed=None):
         """Mescola tutti i segmenti di tutti i video in modo casuale."""
@@ -144,9 +155,7 @@ class MultiVideoShuffler:
                 video_id = segment['video_id']
                 video_clip_source = video_clips_original[video_id]
                 end_time = min(segment['end'], video_clip_source.duration)
-                if segment['start'] >= end_time or segment['start'] >= video_clip_source.duration:
-                    continue
-
+                
                 try:
                     clip = video_clip_source.subclip(segment['start'], end_time)
                     if fps and fps != clip.fps:
@@ -158,7 +167,7 @@ class MultiVideoShuffler:
                     continue
 
             if not extracted_clips_for_final_sequence:
-                return False, "Nessun segmento valido estratto."
+                return False, "Nessun segmento valido estratto. Prova con una durata segmento più lunga."
 
             if progress_callback:
                 progress_callback("Creazione video finale...")
@@ -217,8 +226,8 @@ class MultiVideoShuffler:
 def process_single_video(uploaded_video, input_path, total_duration, segment_input, seed_input, set_custom_fps, fps_value, enable_overlay, custom_duration_enabled, custom_duration_input):
     try:
         segment_duration = float(segment_input)
-        if segment_duration <= 0:
-            st.error("❌ La durata dei segmenti deve essere positiva.")
+        if segment_duration <= 0.1:
+            st.error("❌ La durata dei segmenti deve essere maggiore di 0.1 secondi.")
             return
 
         shuffler = MultiVideoShuffler()
@@ -305,8 +314,8 @@ def process_multi_video_generation(uploaded_videos, video_paths, durations,
                                  segment_input, seed_input, set_custom_fps, fps_value, enable_overlay, custom_duration_enabled, custom_duration_input):
     try:
         segment_duration = float(segment_input)
-        if segment_duration <= 0:
-            st.error("❌ La durata dei segmenti deve essere positiva.")
+        if segment_duration <= 0.1:
+            st.error("❌ La durata dei segmenti deve essere maggiore di 0.1 secondi.")
             return
 
         valid_video_paths = {}
@@ -598,7 +607,7 @@ def process_multi_video_upload(uploaded_videos):
 
     if submitted:
         process_multi_video_generation(
-            uploaded_videos, video_paths, durations,
+            uploaded_videos, valid_video_paths, durations,
             segment_input, seed_input, set_custom_fps, fps_value, enable_overlay,
             custom_duration_enabled, custom_duration_input
         )

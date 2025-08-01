@@ -4,7 +4,7 @@ import random
 import tempfile
 import moviepy
 import traceback
-from moviepy.editor import VideoFileClip, concatenate_videoclips
+from moviepy.editor import VideoFileClip, concatenate_videoclips, vfx
 from PIL import Image
 Image.ANTIALIAS = Image.Resampling.LANCZOS
 MOVIEPY_AVAILABLE = False
@@ -22,6 +22,7 @@ class MultiVideoShuffler:
         self.all_segments = []
         self.shuffled_order = []
         self.video_clips_map = {}
+        self.target_size = None # Risoluzione comune per i video
 
     def add_video(self, video_id, video_name, total_duration, segment_duration):
         """Aggiunge un video e lo segmenta."""
@@ -82,9 +83,15 @@ class MultiVideoShuffler:
             for video_id, path in video_paths.items():
                 video_clips_original[video_id] = VideoFileClip(path)
             self.video_clips_map = video_clips_original
+            
+            # Imposta la risoluzione target basandosi sul primo video
+            if video_clips_original:
+                first_clip = next(iter(video_clips_original.values()))
+                self.target_size = first_clip.size
+                st.info(f"Risoluzione video impostata su {self.target_size} per una transizione fluida.")
 
             if progress_callback:
-                progress_callback("Estrazione segmenti...")
+                progress_callback("Estrazione e riadattamento segmenti...")
             for i, segment in enumerate(self.shuffled_order):
                 video_id = segment['video_id']
                 video_clip_source = video_clips_original[video_id]
@@ -93,6 +100,10 @@ class MultiVideoShuffler:
                 try:
                     # Tenta di estrarre il clip
                     clip = video_clip_source.subclip(segment['start'], end_time)
+                    # Ridimensiona il clip alla risoluzione comune per evitare glitch
+                    if self.target_size:
+                        clip = clip.fx(vfx.resize, newsize=self.target_size)
+                        
                     if fps and fps != clip.fps:
                         clip = clip.set_fps(fps)
                     extracted_clips_for_final_sequence.append(clip)
@@ -416,7 +427,7 @@ def handle_single_video_mode(uploaded_video):
         )
 
 def handle_multi_video_mode():
-    st.markdown("### 📹 Carica i tuoi video per il mix artistico")
+    st.markdown("### 📹 Carica i tuoi video per il mix")
     cols = st.columns(4)
     uploaded_videos = []
     for i, col in enumerate(cols):
@@ -500,19 +511,20 @@ def handle_multi_video_mode():
 
 def main():
     st.set_page_config(
-        page_title="Video Mix Artistico 🎭",
+        page_title="Video Mix Generator by Loop507",
         page_icon="🎬",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    st.title("🎬 Video Mix Artistico: Remix e Collage")
-    st.markdown("Benvenuto! Questo strumento ti permette di creare mix artistici casuali con uno o più video. "
+    st.title("🎬 Video Mix Generator")
+    st.markdown("##### by Loop507")
+    st.markdown("Benvenuto! Questo strumento ti permette di creare mix casuali con uno o più video. "
                 "Scegli una modalità qui sotto per iniziare la tua creazione!")
 
-    mode = st.radio("Seleziona la modalità:", ["Remix Video Singolo", "Multi-Mix Artistico"],
+    mode = st.radio("Seleziona la modalità:", ["Remix Video Singolo", "Multi-Mix"],
                     help="""
                     - **Remix Video Singolo**: crea un remix di un singolo video, mescolandone i segmenti.
-                    - **Multi-Mix Artistico**: combina i segmenti di più video (fino a 4) per creare un mix dinamico.
+                    - **Multi-Mix**: combina i segmenti di più video (fino a 4) per creare un mix dinamico.
                     """)
     st.markdown("---")
 
@@ -524,7 +536,7 @@ def main():
         )
         if uploaded_video is not None:
             handle_single_video_mode(uploaded_video)
-    elif mode == "Multi-Mix Artistico":
+    elif mode == "Multi-Mix":
         handle_multi_video_mode()
 
 if __name__ == "__main__":

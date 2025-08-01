@@ -511,12 +511,12 @@ def handle_multi_video_mode():
 
 def main():
     st.set_page_config(
-        page_title="VideoComposer by Loop507",
+        page_title="VideoDecomposer by Loop507",
         page_icon="🎬",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    st.title("🎬 VideoComposer")
+    st.title("🎬 VideoDecomposer")
     st.markdown("##### by Loop507")
     st.markdown("Benvenuto! Questo strumento ti permette di creare mix casuali con uno o più video. "
                 "Scegli una modalità qui sotto per iniziare la tua creazione!")
@@ -541,4 +541,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-   

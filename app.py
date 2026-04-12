@@ -13,24 +13,22 @@ else:
     Image.ANTIALIAS = Image.LANCZOS
 
 # --- MOTORE PROCEDURALE (SLIT-SCAN) ---
-def apply_procedural_slit_scan(get_frame, t, duration, s_min_start, s_max_start, s_min_end, s_max_end, mode):
+def apply_slit_scan(get_frame, t, duration, val_a, val_b, mode_type, scan_mode):
     frame = get_frame(t).copy()
     h, w, _ = frame.shape
     progress = t / duration
     
-    # Calcolo del range dinamico al tempo T
-    current_min = s_min_start + (s_min_end - s_min_start) * progress
-    current_max = s_max_start + (s_max_end - s_max_start) * progress
+    # Scelta spessore in base alla modalità
+    if mode_type == "Keyframe (Inizio -> Fine)":
+        current_strand = val_a + (val_b - val_a) * progress
+    else: # Random
+        current_strand = random.uniform(val_a, val_b)
     
-    # Scelta spessore random nel range calcolato
-    current_strand = random.uniform(current_min, current_max)
     current_strand = max(1, current_strand)
-    
-    # Magnetismo
     magnet_prob = 0 if progress < 0.7 else ((progress - 0.7) / 0.3) ** 2
     
-    c_mode = mode
-    if mode == "Mix": c_mode = random.choice(["Orizzontale", "Verticale"])
+    c_mode = scan_mode
+    if scan_mode == "Mix": c_mode = random.choice(["Orizzontale", "Verticale"])
 
     if c_mode == "Orizzontale":
         current_y = 0
@@ -53,7 +51,7 @@ def apply_procedural_slit_scan(get_frame, t, duration, s_min_start, s_max_start,
     return frame
 
 # --- LOGICA DI MONTAGGIO ---
-class KeyframeEngine:
+class SimpleEngine:
     def __init__(self):
         self.video_clips = {}
 
@@ -62,7 +60,7 @@ class KeyframeEngine:
             self.video_clips[i] = VideoFileClip(p)
         return self.video_clips[next(iter(self.video_clips))].size
 
-    def generate(self, weights, r_params, duration, fps, s_params, mode, p_bar, use_scan):
+    def generate(self, weights, r_a, r_b, r_mode, duration, fps, s_a, s_b, s_mode, scan_dir, p_bar, use_scan):
         curr_t = 0
         clips = []
         target_size = self.video_clips[next(iter(self.video_clips))].size
@@ -70,12 +68,13 @@ class KeyframeEngine:
         while curr_t < duration:
             progress = curr_t / duration
             
-            # RITMO: Calcolo range dinamico e scelta valore
-            r_min = r_params[0] + (r_params[2] - r_params[0]) * progress
-            r_max = r_params[1] + (r_params[3] - r_params[1]) * progress
-            seg_dur = random.uniform(r_min, r_max)
+            # Calcolo Ritmo
+            if r_mode == "Keyframe (Inizio -> Fine)":
+                seg_dur = r_a + (r_b - r_a) * progress
+            else:
+                seg_dur = random.uniform(r_a, r_b)
             
-            # PESI VIDEO
+            # Calcolo Pesi Video
             w_list = [weights[i][0] + (weights[i][1] - weights[i][0]) * progress for i in range(len(self.video_clips))]
             if sum(w_list) == 0: w_list = [1] * len(w_list)
             
@@ -86,68 +85,56 @@ class KeyframeEngine:
             clip = source.subclip(start_p, start_p + seg_dur).resize(newsize=target_size).set_fps(fps)
             clips.append(clip)
             curr_t += seg_dur
-            p_bar.progress(min(curr_t / duration * 0.4, 0.4), text=f"Montaggio: {int(curr_t)}s")
+            p_bar.progress(min(curr_t / duration * 0.4, 0.4), text="Composizione in corso...")
 
         final = concatenate_videoclips(clips, method="chain").set_duration(duration)
         if use_scan:
-            final = final.fl(lambda gf, t: apply_procedural_slit_scan(gf, t, final.duration, *s_params, mode))
+            final = final.fl(lambda gf, t: apply_slit_scan(gf, t, final.duration, s_a, s_b, s_mode, scan_dir))
         return final
 
 # --- INTERFACCIA ---
 def main():
-    st.set_page_config(page_title="VideoDecomposer Pro", layout="wide")
-    st.title("🎬 VideoDecomposer: Keyframe & Range Master")
+    st.set_page_config(page_title="VideoDecomposer Clean", layout="wide")
+    st.title("🎬 VideoDecomposer: Regia Semplificata")
 
     with st.sidebar:
-        st.header("📁 Video")
+        st.header("📁 Carica Video")
         files = [st.file_uploader(f"Video {i+1}", type=["mp4","mov"]) for i in range(4)]
     
     c1, c2, c3 = st.columns(3)
     
     weights = {}
     with c1:
-        st.subheader("📊 Presenza Video (%)")
+        st.subheader("📊 Mix Video")
         for i in range(4):
             if files[i]:
-                st.write(f"Video {i+1}")
+                st.write(f"**Video {i+1}**")
                 s, e = st.columns(2)
-                ws = s.number_input("Inizio", 0, 100, 100 if i==0 else 0, key=f"ws{i}")
-                we = e.number_input("Fine", 0, 100, 0 if i==0 else 100, key=f"we{i}")
+                ws = s.slider("Inizio %", 0, 100, 100 if i==0 else 0, key=f"ws{i}")
+                we = e.slider("Fine %", 0, 100, 0 if i==0 else 100, key=f"we{i}")
                 weights[i] = (ws, we)
 
     with c2:
         st.subheader("⏱️ Ritmo (Taglio)")
-        st.caption("All'INIZIO il taglio sarà tra:")
-        rs1, rs2 = st.columns(2)
-        rs_min = rs1.number_input("Min (s)", 0.05, 2.0, 0.1, key="rsmin")
-        rs_max = rs2.number_input("Max (s)", 0.05, 2.0, 0.3, key="rsmax")
-        
-        st.caption("Alla FINE il taglio sarà tra:")
-        re1, re2 = st.columns(2)
-        re_min = re1.number_input("Min (s) ", 0.05, 5.0, 1.0, key="remin")
-        re_max = re2.number_input("Max (s) ", 0.05, 5.0, 1.5, key="remax")
+        r_mode = st.radio("Modalità Ritmo", ["Keyframe (Inizio -> Fine)", "Random (Range)"])
+        r_col1, r_col2 = st.columns(2)
+        r_a = r_col1.number_input("Inizio / Min (s)", 0.05, 5.0, 0.2)
+        r_b = r_col2.number_input("Fine / Max (s)", 0.05, 5.0, 1.0)
         
         st.markdown("---")
-        st.subheader("🌀 Slit-Scan")
-        usa_effetto = st.checkbox("ATTIVA STRISCE", value=True)
-        
-        st.caption("Spessore INIZIO (Range):")
-        ss1, ss2 = st.columns(2)
-        ss_min = ss1.number_input("Min px", 1, 300, 5, disabled=not usa_effetto)
-        ss_max = ss2.number_input("Max px", 1, 300, 15, disabled=not usa_effetto)
-        
-        st.caption("Spessore FINE (Range):")
-        se1, se2 = st.columns(2)
-        se_min = se1.number_input("Min px ", 1, 300, 50, disabled=not usa_effetto)
-        se_max = se2.number_input("Max px ", 1, 300, 100, disabled=not usa_effetto)
-        
-        direzione = st.selectbox("Direzione", ["Orizzontale", "Verticale", "Mix"], disabled=not usa_effetto)
+        st.subheader("🌀 Slit-Scan (Strisce)")
+        use_scan = st.checkbox("ATTIVA EFFETTO", value=True)
+        s_mode = st.radio("Modalità Strisce", ["Keyframe (Inizio -> Fine)", "Random (Range)"], disabled=not use_scan)
+        s_col1, s_col2 = st.columns(2)
+        s_a = s_col1.number_input("Inizio / Min (px)", 1, 300, 10, disabled=not use_scan)
+        s_b = s_col2.number_input("Fine / Max (px)", 1, 300, 80, disabled=not use_scan)
+        scan_dir = st.selectbox("Direzione", ["Orizzontale", "Verticale", "Mix"], disabled=not use_scan)
 
     with c3:
         st.subheader("⚙️ Output")
         durata = st.number_input("Durata Totale (s)", 5, 300, 20)
         fps = st.selectbox("FPS", [24, 30])
-        if st.button("🚀 AVVIA RENDERING", use_container_width=True):
+        if st.button("🚀 GENERA VIDEO", use_container_width=True):
             paths = {i: tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name for i, f in enumerate(files) if f}
             for i, f in enumerate(files):
                 if f:
@@ -157,14 +144,10 @@ def main():
             
             p_bar = st.progress(0, text="Avvio...")
             try:
-                engine = KeyframeEngine()
+                engine = SimpleEngine()
                 engine.load_sources(paths)
-                r_p = (rs_min, rs_max, re_min, re_max)
-                s_p = (ss_min, ss_max, se_min, se_max)
-                
-                final = engine.generate(weights, r_p, durata, fps, s_p, direzione, p_bar, usa_effetto)
-                out = os.path.join(tempfile.gettempdir(), "render_final.mp4")
-                p_bar.progress(0.6, text="Rendering Finale...")
+                final = engine.generate(weights, r_a, r_b, r_mode, durata, fps, s_a, s_b, s_mode, scan_dir, p_bar, use_scan)
+                out = os.path.join(tempfile.gettempdir(), "final.mp4")
                 final.write_videofile(out, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
                 st.success("✅ Completato!"); st.video(out)
             except Exception as e: st.error(f"Errore: {e}")

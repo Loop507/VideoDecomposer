@@ -2,7 +2,7 @@ import streamlit as st
 import os, random, tempfile, cv2, time
 import numpy as np
 
-# --- 1. IMPORTAZIONE ROBUSTA PER MOVIEPY 2.2.1 ---
+# --- 1. IMPORTAZIONE MOVIEPY 2.2.1 ---
 try:
     from moviepy.video.io.VideoFileClip import VideoFileClip
     from moviepy.video.VideoClip import VideoClip
@@ -10,187 +10,144 @@ try:
 except ImportError:
     from moviepy.editor import VideoFileClip, VideoClip, AudioClip
 
-# --- 2. LOGICA SCOMPOSIZIONE (VISIVA) ---
-def apply_decomposition(frames, weights, grid, offset, jitter, j_indep, orient, active_glitch):
-    active_ids = list(frames.keys())
-    w_list = [float(weights.get(i, 0.01)) for i in active_ids]
-    if sum(w_list) <= 0: w_list[0] = 1.0
+# --- 2. FUNZIONE FILL (RITAGLIO INTELLIGENTE) ---
+def get_full_frame(get_frame_func, t, target_w, target_h, clip_dur):
+    img = get_frame_func(t % clip_dur)
+    h, w, _ = img.shape
+    scale = max(target_w / w, target_h / h)
+    nw, nh = int(w * scale), int(h * scale)
+    img_res = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    # Crop centrale per riempire il formato
+    sy, sx = (nh - target_h) // 2, (nw - target_w) // 2
+    return img_res[sy:sy+target_h, sx:sx+target_w]
 
-    # Scelta del Deck dominante per l'audio di questo istante (Logica Shuffle)
-    winner_audio_id = random.choices(active_ids, weights=w_list)[0]
-
-    if not active_glitch:
-        return frames[winner_audio_id], winner_audio_id
-
-    ref_frame = next(iter(frames.values()))
-    h, w, c = ref_frame.shape
-    out_frame = np.zeros_like(ref_frame)
-    block_jitter = random.randint(-jitter, jitter) if (jitter > 0 and not j_indep) else 0
-
-    for (start_p, end_p) in grid:
-        # Ogni striscia pesca da un deck in base ai pesi
-        strip_id = random.choices(active_ids, weights=w_list)[0]
-        source = frames[strip_id]
-        
-        final_off = int(offset + block_jitter)
-        if j_indep and jitter > 0:
-            final_off += random.randint(-jitter, jitter)
-            
-        if orient == "Orizzontale":
-            strip = source[start_p:end_p, :]
-            out_frame[start_p:end_p, :] = np.roll(strip, final_off, axis=1)
-        else:
-            strip = source[:, start_p:end_p]
-            out_frame[:, start_p:end_p] = np.roll(strip, final_off, axis=0)
-            
-    return out_frame, winner_audio_id
-
-# --- 3. PREPARAZIONE CLIP (ZOOM/FILL - NO BARRE NERE) ---
-def prepare_clip(path, aspect):
-    clip = VideoFileClip(path)
-    if aspect == "16:9": target_w, target_h = 1280, 720
-    elif aspect == "1:1": target_w, target_h = 720, 720
-    else: target_w, target_h = 405, 720 # 9:16
-
-    def frame_transform(get_frame, t):
-        pic = get_frame(t % clip.duration)
-        h, w, _ = pic.shape
-        # Logica Fill: zooma finché non copre tutto il canvas
-        scale = max(target_w / w, target_h / h)
-        res = cv2.resize(pic, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-        # Crop centrale
-        sy, sx = (res.shape[0] - target_h) // 2, (res.shape[1] - target_w) // 2
-        return res[sy:sy+target_h, sx:sx+target_w]
-
-    return clip.transform(frame_transform), target_w, target_h
-
-# --- 4. MOTORE RENDERING ---
+# --- 3. MOTORE DI RENDERING ---
 def render_engine(video_paths, p):
-    clips = {}
-    tw, th = 1280, 720
-    for i, path in video_paths.items():
-        c, tw, th = prepare_clip(path, p['aspect'])
-        clips[i] = c
-
-    duration, fps = p['durata'], 24
-    # State memorizza la griglia e la mappa audio per ogni istante
-    state = {'last_tick': -1.0, 'grid': None, 'next_dur': 0, 'audio_map': {}}
+    clips = {i: VideoFileClip(path) for i, path in video_paths.items()}
+    tw, th = p['size']
+    duration = p['durata']
+    
+    # Stato per sincronizzare audio e video
+    state = {'last_t': -1.0, 'grid': None, 'next_step': 0, 'audio_id': 0}
 
     def make_frame(t):
-        # FIX Errore len(): Gestione sicura del Ritmo Stutter
-        r = p['ritmo']
-        # Se lo slider è un range (tupla), estrai i valori, altrimenti usa il singolo
-        min_r, max_r = (r[0], r[1]) if isinstance(r, (list, tuple)) else (r, r)
+        # Gestione sicura dei parametri (Fix len() error)
+        r_range = p['ritmo']
+        min_r, max_r = (r_range[0], r_range[1]) if isinstance(r_range, (list, tuple)) else (r_range, r_range)
         
-        if t - state['last_tick'] >= state['next_dur'] or state['grid'] is None:
+        # Aggiornamento griglia e scelta audio al "ritmo" giusto
+        if t - state['last_t'] >= state['next_step'] or state['grid'] is None:
+            # Crea nuova scomposizione
             dim = th if p['orient'] == "Orizzontale" else tw
-            new_grid, curr = [], 0
+            new_grid = []
+            curr = 0
             while curr < dim:
-                # Spessore casuale tra il range impostato
-                th_min, th_max = p['thick'][0], p['thick'][1]
-                thick = random.randint(th_min, th_max)
+                thick = random.randint(p['thick'][0], p['thick'][1])
                 end = int(min(curr + thick, dim))
                 new_grid.append((curr, end))
                 curr = end
-            state['grid'], state['last_tick'] = new_grid, t
-            state['next_dur'] = random.uniform(min_r, max_r)
+            state['grid'] = new_grid
+            state['last_t'] = t
+            state['next_step'] = random.uniform(min_r, max_r)
+            
+            # Sceglie quale deck comanda l'audio per questo intervallo
+            prog = t / duration
+            weights = [
+                p['d1_s'] + (p['d1_e'] - p['d1_s']) * prog,
+                p['d2_s'] + (p['d2_e'] - p['d2_s']) * prog,
+                p['d3_w'], p['d4_w']
+            ]
+            valid_ids = list(clips.keys())
+            # Filtra pesi solo per clip esistenti
+            active_weights = [weights[i] for i in valid_ids]
+            state['audio_id'] = random.choices(valid_ids, weights=active_weights)[0]
 
-        prog = min(t / duration, 1.0)
-        weights = {
-            0: max(0.01, float(p['d1_s'] + (p['d1_e'] - p['d1_s']) * prog)),
-            1: max(0.01, float(p['d2_s'] + (p['d2_e'] - p['d2_s']) * prog)),
-            2: max(0.01, float(p['d3_w'])),
-            3: max(0.01, float(p['d4_w']))
-        }
+        # Generazione frame
+        out = np.zeros((th, tw, 3), dtype=np.uint8)
+        # Pre-carica i frame Fill per questo istante t
+        dframes = {i: get_full_frame(c.get_frame, t, tw, th, c.duration) for i, c in clips.items()}
         
-        deck_frames = {i: c.get_frame(t % c.duration) for i, c in clips.items()}
-        curr_offset = int(p['off_s'] + (p['off_e'] - p['off_s']) * prog)
-        
-        img, win_id = apply_decomposition(
-            deck_frames, weights, state['grid'], 
-            curr_offset, p['jitter'], p['j_indep'], p['orient'], p['active_glitch']
-        )
-        
-        # Sincronia Audio: salviamo quale deck suona a questo tempo t
-        state['audio_map'][round(t, 3)] = win_id
-        return img
+        # Applica le strisce
+        prog = t / duration
+        current_weights = [p['d1_s'] + (p['d1_e'] - p['d1_s']) * prog, 
+                           p['d2_s'] + (p['d2_e'] - p['d2_s']) * prog, 
+                           p['d3_w'], p['d4_w']]
+        valid_ids = list(clips.keys())
+        active_weights = [current_weights[i] for i in valid_ids]
+
+        for (s, e) in state['grid']:
+            chosen = random.choices(valid_ids, weights=active_weights)[0]
+            if p['orient'] == "Orizzontale":
+                out[s:e, :] = dframes[chosen][s:e, :]
+            else:
+                out[:, s:e] = dframes[chosen][:, s:e]
+        return out
 
     def make_audio(t_array):
-        # Genera l'audio saltando tra i deck come nel primo codice
-        samples = np.zeros((len(t_array), 2))
+        # Audio masticato: segue la scelta fatta in make_frame
+        audio_out = np.zeros((len(t_array), 2))
         for i, t in enumerate(t_array):
-            target_id = state['audio_map'].get(round(t, 3), 0)
-            if target_id in clips and clips[target_id].audio:
-                samples[i] = clips[target_id].audio.get_frame(t % clips[target_id].duration)
-        return samples
+            target = state['audio_id']
+            if target in clips and clips[target].audio:
+                audio_out[i] = clips[target].audio.get_frame(t % clips[target].duration)
+        return audio_out
 
-    final_v = VideoClip(make_frame, duration=duration)
-    final_v.fps, final_v.size = fps, (tw, th)
-    
-    # Audio Sync (Tritato come i frame)
+    # Rendering finale
+    v_clip = VideoClip(make_frame, duration=duration)
     if p['sync_audio']:
-        final_v.audio = AudioClip(make_audio, duration=duration)
+        v_clip.audio = AudioClip(make_audio, duration=duration)
     elif 0 in clips and clips[0].audio:
-        final_v.audio = clips[0].audio.with_duration(duration)
+        v_clip.audio = clips[0].audio.with_duration(duration)
 
-    out_p = os.path.join(tempfile.gettempdir(), f"render_{int(time.time())}.mp4")
-    final_v.write_videofile(out_p, codec="libx264", audio_codec="aac", fps=fps, preset="ultrafast", logger=None)
+    out_file = os.path.join(tempfile.gettempdir(), f"render_{int(time.time())}.mp4")
+    v_clip.write_videofile(out_file, fps=24, codec="libx264", audio_codec="aac", logger=None)
     
     for c in clips.values(): c.close()
-    return out_p
+    return out_file
 
-# --- 5. INTERFACCIA STREAMLIT ---
+# --- 4. INTERFACCIA ---
 def main():
-    st.set_page_config(layout="wide", page_title="Glitch Engine PRO")
-    st.title("📟 GLITCH ENGINE V4.2 - STABLE SYNC")
+    st.set_page_config(layout="wide")
+    st.title("📟 GLITCH ENGINE V4.3 - FINAL")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.header("🎬 Regia")
-        v_files = [st.file_uploader(f"Video Deck {i+1}", type=["mp4","mov"]) for i in range(4)]
-        ritmo = st.slider("Ritmo Stutter (sec)", 0.02, 1.0, (0.05, 0.20))
-        aspect = st.selectbox("Formato Output (AUTO-FILL)", ["16:9", "1:1", "9:16"])
-        sync_audio = st.toggle("MASTICA AUDIO (Sync ai tagli)", value=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        v_files = [st.file_uploader(f"Video {i+1}", type=["mp4","mov"]) for i in range(4)]
+        ritmo = st.slider("Ritmo Stutter", 0.01, 1.0, (0.05, 0.20))
+        aspect = st.selectbox("Formato", ["16:9", "1:1", "9:16"])
+        sync_audio = st.toggle("Audio masticato (Sync)", value=True)
         
-        st.subheader("Automazione Flusso")
+    with c2:
         d1_se = st.slider("Deck 1 (%)", 0, 100, (100, 0))
         d2_se = st.slider("Deck 2 (%)", 0, 100, (0, 100))
-        d3_w = st.slider("Noise 3 (%)", 0, 100, 15)
-        d4_w = st.slider("Noise 4 (%)", 0, 100, 5)
+        thick = st.slider("Spessore Strisce", 1, 300, (5, 35))
+        orient = st.radio("Direzione", ["Orizzontale", "Verticale"])
+        durata = st.number_input("Secondi totali", 1, 60, 10)
 
-    with col2:
-        st.header("⚡ Effetti Strisce")
-        active_glitch = st.toggle("ATTIVA SCOMPOSIZIONE", value=True)
-        orient = st.radio("Direzione Tagli", ["Orizzontale", "Verticale"])
-        thick = st.slider("Spessore Strisce (px)", 1, 500, (2, 15))
-        off_se = st.slider("Offset Movimento (px)", 0, 1000, (0, 300))
-        jitter = st.slider("Jitter (Vibrazione)", 0, 150, 40)
-        j_indep = st.toggle("Jitter Granulare", value=True)
-        durata = st.number_input("Durata Totale (sec)", 1, 300, 10)
-
-    if st.button("🚀 GENERA MASTER"):
+    if st.button("🚀 GENERA"):
         paths = {i: tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") for i, f in enumerate(v_files) if f}
         for i, f in enumerate(v_files):
             if f: paths[i].write(f.read()); paths[i] = paths[i].name
         
         if not paths:
-            st.error("Carica almeno un video sorgente!")
-        else:
-            params = {
-                'durata': durata, 'ritmo': ritmo, 'aspect': aspect, 'orient': orient,
-                'd1_s': d1_se[0], 'd1_e': d1_se[1], 'd2_s': d2_se[0], 'd2_e': d2_se[1],
-                'd3_w': d3_w, 'd4_w': d4_w, 'thick': thick, 'active_glitch': active_glitch,
-                'off_s': off_se[0], 'off_e': off_se[1], 'jitter': jitter, 'j_indep': j_indep,
-                'sync_audio': sync_audio
-            }
-            with st.spinner("Rendering Granulare in corso..."):
-                try:
-                    res = render_engine(paths, params)
-                    st.video(res)
-                    st.download_button("📥 Scarica", open(res, "rb"), "glitch_master.mp4")
-                    for p in paths.values(): os.unlink(p)
-                except Exception as e:
-                    st.error(f"Errore tecnico: {e}")
+            st.error("Manca il video sorgente!")
+            return
 
-if __name__ == "__main__":
-    main()
+        size_map = {"16:9": (1280, 720), "1:1": (720, 720), "9:16": (405, 720)}
+        params = {
+            'durata': durata, 'ritmo': ritmo, 'size': size_map[aspect],
+            'd1_s': d1_se[0], 'd1_e': d1_se[1], 'd2_s': d2_se[0], 'd2_e': d2_se[1],
+            'd3_w': 10, 'd4_w': 5, 'thick': thick, 'orient': orient, 
+            'sync_audio': sync_audio
+        }
+        
+        with st.spinner("Creazione in corso..."):
+            try:
+                res = render_engine(paths, params)
+                st.video(res)
+                st.download_button("Scarica", open(res, "rb"), "glitch_master.mp4")
+                for p in paths.values(): os.unlink(p)
+            except Exception as e:
+                st.error(f"Errore: {e}")
+
+if __name__ == "__main__": main()

@@ -1,1 +1,4 @@
-moviepy<2.0.0
+streamlit
+moviepy
+opencv-python-headless
+numpy

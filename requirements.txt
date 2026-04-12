@@ -1,2 +1,5 @@
-moviepy==1.0.3 
 streamlit
+moviepy
+numpy
+opencv-python-headless
+Pillow==9.5.0

@@ -1,36 +1,40 @@
 import streamlit as st
 import os, random, tempfile, cv2, time
 import numpy as np
+from moviepy.editor import VideoFileClip, VideoClip
 
-# Importazione dinamica per massima compatibilità
-try:
-    from moviepy.editor import VideoFileClip, VideoClip
-except ImportError:
-    from moviepy.video.io.VideoFileClip import VideoFileClip
-    from moviepy.video.VideoClip import VideoClip
+# --- 1. FUNZIONE LOGICA SCOMPOSIZIONE (IL "MOSAICO") ---
+def apply_decomposition(frames, weights, grid, offset, jitter, j_indep, orient, active_glitch):
+    """
+    Riceve i frame di tutti i deck e decide come comporre l'immagine finale.
+    """
+    # Se la scomposizione è SPENTA, restituiamo il frame del deck dominante
+    if not active_glitch:
+        main_id = random.choices(list(frames.keys()), weights=[weights.get(i,0) for i in frames.keys()])[0]
+        return frames[main_id]
 
-# --- 1. MOTORE DI SCOMPOSIZIONE (OTTIMIZZATO) ---
-def apply_glitch_core(deck_frames, weights, strip_map, offset_val, jitter_val, jitter_indep, orientation):
-    ref_id = next(iter(deck_frames))
-    ref_frame = deck_frames[ref_id]
+    # Se la scomposizione è ACCESA, creiamo il mosaico
+    ref_frame = next(iter(frames.values()))
     h, w, c = ref_frame.shape
     out_frame = np.zeros_like(ref_frame)
     
-    active_ids = list(deck_frames.keys())
-    block_jitter = random.randint(-jitter_val, jitter_val) if (jitter_val > 0 and not jitter_indep) else 0
+    active_ids = list(frames.keys())
+    # Vibrazione globale
+    block_jitter = random.randint(-jitter, jitter) if (jitter > 0 and not j_indep) else 0
 
-    for (start_p, end_p) in strip_map:
-        # Pesi dinamici: sceglie quale video mostrare in questa striscia
+    for (start_p, end_p) in grid:
+        # 1. Automazione Deck 1 -> 2: Scegliamo chi possiede questa striscia
         w_list = [weights.get(i, 0) for i in active_ids]
         chosen_id = random.choices(active_ids, weights=w_list)[0]
-        source = deck_frames[chosen_id]
+        source = frames[chosen_id]
         
-        # Calcolo Offset + Jitter
-        final_off = int(offset_val + block_jitter)
-        if jitter_indep and jitter_val > 0:
-            final_off += random.randint(-jitter_val, jitter_val)
+        # 2. Calcolo Spostamento (Offset + Jitter)
+        final_off = int(offset + block_jitter)
+        if j_indep and jitter > 0:
+            final_off += random.randint(-jitter, jitter)
             
-        if orientation == "Orizzontale":
+        # 3. Taglio e Cucito
+        if orient == "Orizzontale":
             strip = source[start_p:end_p, :]
             out_frame[start_p:end_p, :] = np.roll(strip, final_off, axis=1)
         else:
@@ -39,126 +43,131 @@ def apply_glitch_core(deck_frames, weights, strip_map, offset_val, jitter_val, j
             
     return out_frame
 
-# --- 2. NORMALIZZAZIONE (STABILE) ---
-def normalize_clip(path, aspect_ratio):
+# --- 2. NORMALIZZAZIONE VIDEO (ANTI-CRASH) ---
+def prepare_clip(path, aspect):
     clip = VideoFileClip(path)
-    target_h = 720
-    if aspect_ratio == "1:1": target_w = 720
-    elif aspect_ratio == "16:9": target_w = 1280
-    else: target_w = 405 # 9:16
-    
-    def process_frame(pic):
+    h_target = 720
+    w_target = 1280 if aspect == "16:9" else (720 if aspect == "1:1" else 405)
+
+    def frame_transform(get_frame, t):
+        pic = get_frame(t)
         h, w, _ = pic.shape
-        scale = target_h / h
-        new_w = int(w * scale)
-        res = cv2.resize(pic, (new_w, target_h), interpolation=cv2.INTER_AREA)
+        scale = h_target / h
+        res = cv2.resize(pic, (int(w * scale), h_target), interpolation=cv2.INTER_AREA)
         h_res, w_res, _ = res.shape
-        start_x = max(0, w_res//2 - target_w//2)
-        return res[:, start_x:start_x+target_w]
+        start_x = max(0, w_res//2 - w_target//2)
+        return res[:, start_x:start_x+w_target]
 
-    return clip.fl_image(process_frame)
+    # .transform è il metodo universale compatibile con MoviePy 1.0 e 2.0
+    return clip.transform(frame_transform)
 
-# --- 3. RENDERING MASTER ---
-def run_full_render(video_paths, p):
-    clips = {i: normalize_clip(path, p['aspect']) for i, path in video_paths.items()}
+# --- 3. MOTORE DI RENDERING ---
+def render_engine(video_paths, p):
+    clips = {i: prepare_clip(path, p['aspect']) for i, path in video_paths.items()}
     duration, fps = p['durata'], 24
-    state = {'last_tick': -1.0, 'current_map': None, 'next_tick_dur': 0}
+    
+    # Stato interno per il ritmo delle strisce
+    state = {'last_tick': -1.0, 'current_grid': None, 'next_dur': 0}
 
     def make_frame(t):
-        if t - state['last_tick'] >= state['next_tick_dur'] or state['current_map'] is None:
-            first_id = next(iter(clips))
-            sample = clips[first_id].get_frame(0)
+        # A. Gestione Ritmo (Stutter)
+        if t - state['last_tick'] >= state['next_dur'] or state['current_grid'] is None:
+            first_clip = clips[next(iter(clips))]
+            sample = first_clip.get_frame(0)
             dim = sample.shape[0] if p['orient'] == "Orizzontale" else sample.shape[1]
             
-            new_map, curr = [], 0
+            # Generazione nuova griglia spaziale
+            new_grid, curr = [], 0
             while curr < dim:
                 thick = random.randint(p['thick'][0], p['thick'][1])
                 end = int(min(curr + thick, dim))
-                new_map.append((curr, end))
+                new_grid.append((curr, end))
                 curr = end
-            state['current_map'], state['last_tick'] = new_map, t
-            state['next_tick_dur'] = random.uniform(p['ritmo'][0], p['ritmo'][1])
+            state['current_grid'], state['last_tick'] = new_grid, t
+            state['next_dur'] = random.uniform(p['ritmo'][0], p['ritmo'][1])
 
+        # B. Automazione Deck 1 -> 2 (Calcolo Probabilità temporale)
         prog = min(t / duration, 1.0)
-        w_logic = {
-            0: p['d1_s'] + (p['d1_e'] - p['d1_s']) * prog,
-            1: p['d2_s'] + (p['d2_e'] - p['d2_s']) * prog,
-            2: p['d3_w'], 3: p['d4_w']
+        weights = {
+            0: p['d1_s'] + (p['d1_e'] - p['d1_s']) * prog, # Deck 1
+            1: p['d2_s'] + (p['d2_e'] - p['d2_s']) * prog, # Deck 2
+            2: p['d3_w'], # Noise Deck 3
+            3: p['d4_w']  # Noise Deck 4
         }
         
-        # Estrazione frame dai deck (looping automatico)
+        # C. Composizione Finale
         deck_frames = {i: c.get_frame(t % c.duration) for i, c in clips.items()}
-        curr_off = int(p['off_s'] + (p['off_e'] - p['off_s']) * prog)
+        curr_offset = int(p['off_s'] + (p['off_e'] - p['off_s']) * prog)
         
-        return apply_glitch_core(deck_frames, w_logic, state['current_map'], 
-                                 curr_off, p['jitter'], p['j_indep'], p['orient'])
+        return apply_decomposition(
+            deck_frames, weights, state['current_grid'], 
+            curr_offset, p['jitter'], p['j_indep'], p['orient'], p['active_glitch']
+        )
 
-    final_clip = VideoClip(make_frame, duration=duration).set_fps(fps)
-    
-    # Audio dal Deck 1
+    # Generazione clip
+    final = VideoClip(make_frame, duration=duration).set_fps(fps)
     if 0 in clips and clips[0].audio:
-        final_clip = final_clip.set_audio(clips[0].audio.subclip(0, min(duration, clips[0].duration)))
+        final = final.set_audio(clips[0].audio.subclip(0, min(duration, clips[0].duration)))
 
-    out_p = os.path.join(tempfile.gettempdir(), f"render_{int(time.time())}.mp4")
-    final_clip.write_videofile(out_p, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
+    output_file = os.path.join(tempfile.gettempdir(), f"master_{int(time.time())}.mp4")
+    final.write_videofile(output_file, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
     
     for c in clips.values(): c.close()
-    return out_p
+    return output_file
 
-# --- 4. INTERFACCIA ---
+# --- 4. INTERFACCIA STREAMLIT ---
 def main():
     st.set_page_config(layout="wide", page_title="Glitch Engine V3.3")
-    st.title("📟 GLITCH MASTER V3.3")
+    st.title("📟 GLITCH ENGINE: DECOMPOSITION V3.3")
     
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 1])
+    
     with col1:
-        st.header("🎬 Regia")
+        st.header("🎬 Set Regia")
         v_files = [st.file_uploader(f"Video Deck {i+1}", type=["mp4","mov"]) for i in range(4)]
-        # RITMO: Min 0.01, Valore iniziale 0.10
         ritmo = st.slider("Ritmo Stutter (sec)", 0.01, 1.0, (0.10, 0.30), step=0.01)
-        aspect = st.selectbox("Formato Output", ["16:9", "1:1", "9:16"])
+        aspect = st.selectbox("Formato Schermo", ["16:9", "1:1", "9:16"])
         
-        st.subheader("Automazione Deck 1 ➔ 2")
-        d1_se = st.slider("Deck 1 (%)", 0, 100, (100, 0))
-        d2_se = st.slider("Deck 2 (%)", 0, 100, (0, 100))
-        d3_w = st.slider("Deck 3 Noise (%)", 0, 100, 15)
-        d4_w = st.slider("Deck 4 Noise (%)", 0, 100, 5)
-    
+        st.subheader("Automazione Presenza (Start ➔ End)")
+        d1_se = st.slider("Deck 1 %", 0, 100, (100, 0))
+        d2_se = st.slider("Deck 2 %", 0, 100, (0, 100))
+        d3_w = st.slider("Deck 3 Rumore %", 0, 100, 15)
+        d4_w = st.slider("Deck 4 Rumore %", 0, 100, 5)
+
     with col2:
-        st.header("⚡ Distorsione")
-        orient = st.radio("Orientamento Tagli", ["Orizzontale", "Verticale"])
-        thick = st.slider("Spessore Strisce (Min/Max px)", 1, 500, (5, 40))
-        off_se = st.slider("Offset Pixel (Start ➔ End)", 0, 1000, (0, 200))
-        jitter = st.slider("Intensità Jitter", 0, 150, 30)
-        j_indep = st.toggle("Jitter Indipendente", value=True)
-        durata = st.number_input("Durata Totale (secondi)", 1, 300, 10)
+        st.header("⚡ Set Distruzione")
+        active_glitch = st.toggle("ATTIVA SCOMPOSIZIONE (STRISCE)", value=True)
+        orient = st.radio("Direzione Tagli", ["Orizzontale", "Verticale"])
+        thick = st.slider("Spessore Strisce (Min/Max px)", 1, 500, (5, 28))
+        
+        st.subheader("Spostamento & Jitter")
+        off_se = st.slider("Offset Pixel (Start ➔ End)", 0, 1000, (0, 250))
+        jitter = st.slider("Intensità Tremore (Jitter)", 0, 150, 40)
+        j_indep = st.toggle("Tremore Indipendente (Granulare)", value=True)
+        durata = st.number_input("Durata Totale (sec)", 1, 300, 10)
 
     if st.button("🚀 GENERA VIDEO"):
-        paths = {}
+        paths = {i: tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") for i, f in enumerate(v_files) if f}
         for i, f in enumerate(v_files):
-            if f:
-                t = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                t.write(f.read())
-                paths[i] = t.name
+            if f: paths[i].write(f.read()); paths[i] = paths[i].name
         
         if len(paths) < 2:
-            st.error("Carica almeno i primi 2 Deck per iniziare!")
+            st.error("Carica almeno i primi 2 Deck!")
         else:
-            p = {'durata':durata, 'ritmo':ritmo, 'aspect':aspect, 'orient':orient,
-                 'd1_s':d1_se[0], 'd1_e':d1_se[1], 'd2_s':d2_se[0], 'd2_e':d2_se[1],
-                 'd3_w':d3_w, 'd4_w':d4_w, 'thick':thick, 'off_s':off_se[0], 
-                 'off_e':off_se[1], 'jitter':jitter, 'j_indep':j_indep}
-            
-            with st.spinner("Scomposizione in corso..."):
+            params = {
+                'durata': durata, 'ritmo': ritmo, 'aspect': aspect, 'orient': orient,
+                'd1_s': d1_se[0], 'd1_e': d1_se[1], 'd2_s': d2_se[0], 'd2_e': d2_se[1],
+                'd3_w': d3_w, 'd4_w': d4_w, 'thick': thick, 'active_glitch': active_glitch,
+                'off_s': off_se[0], 'off_e': off_se[1], 'jitter': jitter, 'j_indep': j_indep
+            }
+            with st.spinner("Sintetizzando il glitch..."):
                 try:
-                    res = run_full_render(paths, p)
+                    res = render_engine(paths, params)
                     st.video(res)
-                    with open(res, "rb") as f:
-                        st.download_button("📥 Scarica Master", f, "glitch_v3.mp4")
-                    # Pulizia chirurgica file temporanei
-                    for p_path in paths.values(): os.unlink(p_path)
+                    st.download_button("📥 Scarica Master", open(res, "rb"), "glitch_master.mp4")
+                    for p in paths.values(): os.unlink(p)
                 except Exception as e:
-                    st.error(f"Errore critico: {e}")
+                    st.error(f"Errore: {e}")
 
 if __name__ == "__main__":
     main()

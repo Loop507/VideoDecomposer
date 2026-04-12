@@ -2,176 +2,163 @@ import streamlit as st
 import os
 import random
 import tempfile
-import traceback
-from moviepy.editor import VideoFileClip, concatenate_videoclips
-from PIL import Image
+import numpy as np
+from moviepy.editor import VideoFileClip, VideoClip
 
-# Patch per compatibilità MoviePy/Pillow
-if hasattr(Image, 'Resampling'):
-    Image.ANTIALIAS = Image.Resampling.LANCZOS
-else:
-    Image.ANTIALIAS = Image.LANCZOS
+# --- 1. MOTORE DI SCOMPOSIZIONE (CORE) ---
+def apply_glitch_engine(deck_frames, weights, strip_map, offset_val, jitter_val, jitter_indep, orientation):
+    # Prendiamo le dimensioni dal primo deck come riferimento
+    ref_frame = next(iter(deck_frames.values()))
+    h, w, c = ref_frame.shape
+    out_frame = np.zeros_like(ref_frame)
+    
+    active_ids = list(deck_frames.keys())
+    # Jitter globale (se non indipendente, vibra tutto il blocco)
+    block_jitter = random.randint(-jitter_val, jitter_val) if (jitter_val > 0 and not jitter_indep) else 0
 
-class MultiVideoShuffler:
-    """Gestisce la segmentazione casuale e il montaggio di più video."""
-    def __init__(self):
-        self.all_segments = []
-        self.shuffled_order = []
-        self.target_size = None 
-
-    def add_video(self, video_id, video_name, total_duration, min_dur, max_dur):
-        """Taglia il video in pezzi con durata casuale tra min_dur e max_dur."""
-        current_time = 0
-        added_count = 0
+    for (start_p, end_p) in strip_map:
+        # Scelta del Deck tramite pesi probabilistici
+        chosen_id = random.choices(active_ids, weights=[weights[i] for i in active_ids])[0]
+        source = deck_frames[chosen_id]
         
-        while current_time < total_duration:
-            # Sceglie una durata random nel range impostato (es. tra 0.2 e 0.4)
-            seg_dur = random.uniform(min_dur, max_dur)
-            end_time = min(current_time + seg_dur, total_duration)
+        # Calcolo Offset finale (Spostamento + Jitter scelto)
+        final_off = offset_val + block_jitter
+        if jitter_indep and jitter_val > 0:
+            final_off += random.randint(-jitter_val, jitter_val)
             
-            # Evitiamo micro-frammenti quasi invisibili
-            if end_time - current_time > 0.05:
-                self.all_segments.append({
-                    'video_id': video_id,
-                    'video_name': video_name,
-                    'start': current_time,
-                    'end': end_time,
-                    'duration': end_time - current_time
-                })
-                added_count += 1
-            current_time = end_time
-        return added_count
+        if orientation == "Orizzontale":
+            strip = source[start_p:end_p, :]
+            out_frame[start_p:end_p, :] = np.roll(strip, final_off, axis=1)
+        else:
+            strip = source[:, start_p:end_p]
+            out_frame[:, start_p:end_p] = np.roll(strip, final_off, axis=0)
+            
+    return out_frame
 
-    def shuffle(self, seed=None):
-        """Mescola tutti i segmenti di tutti i video caricati."""
-        if seed is not None and seed != 0:
-            random.seed(seed)
-        self.shuffled_order = list(self.all_segments)
-        random.shuffle(self.shuffled_order)
+# --- 2. NORMALIZZAZIONE FORMATI (1:1, 16:9, 9:16) ---
+def normalize_clip(clip, aspect_ratio):
+    target_h = 720
+    if aspect_ratio == "1:1": target_w = 720
+    elif aspect_ratio == "16:9": target_w = 1280
+    else: target_w = 405 # 9:16
+    
+    # Resize e Crop centrale per evitare distorsioni
+    c_res = clip.resize(height=target_h)
+    return c_res.crop(x_center=c_res.w/2, y_center=target_h/2, width=target_w, height=target_h)
 
-    def process_videos(self, video_paths, output_path, progress_callback=None, fps=None, max_total_duration=None):
-        """Montaggio finale ottimizzato per evitare crash di memoria."""
-        video_clips_originals = {}
-        extracted_clips = []
+# --- 3. RENDERING MASTER ---
+def run_full_render(video_paths, p):
+    # Caricamento e pulizia Deck
+    clips = {}
+    for i, path in video_paths.items():
+        clips[i] = normalize_clip(VideoFileClip(path), p['aspect'])
+
+    duration = p['durata']
+    fps = 24
+    
+    # Stato persistente per il Ritmo (Stutter)
+    state = {'last_tick': -1.0, 'current_map': None, 'next_tick_dur': 0}
+
+    def make_frame(t):
+        # A. LOGICA RITMICA (Aggiorna la griglia ogni X secondi)
+        if t - state['last_tick'] >= state['next_tick_dur'] or state['current_map'] is None:
+            dim = 720 if p['orient'] == "Orizzontale" else clips[0].w
+            new_map = []
+            curr = 0
+            while curr < dim:
+                # Spessore random o fisso
+                thick = random.randint(p['thick'][0], p['thick'][1]) if p['rand'] else p['thick'][1]
+                end = min(curr + thick, dim)
+                new_map.append((curr, end))
+                curr = end
+            state['current_map'] = new_map
+            state['last_tick'] = t
+            state['next_tick_dur'] = random.uniform(p['ritmo'][0], p['ritmo'][1])
+
+        # B. EVOLUZIONE TEMPORALE (Pesi e Offset)
+        prog = t / duration
+        # Interpolazione dei deck principali
+        w1 = p['d1_s'] + (p['d1_e'] - p['d1_s']) * prog
+        w2 = p['d2_s'] + (p['d2_e'] - p['d2_s']) * prog
+        weights = {0: w1, 1: w2, 2: p['d3_w'], 3: p['d4_w']}
         
-        try:
-            # 1. Apertura flussi video
-            for v_id, path in video_paths.items():
-                video_clips_originals[v_id] = VideoFileClip(path)
-            
-            # Risoluzione basata sul primo video
-            self.target_size = video_clips_originals[next(iter(video_clips_originals))].size
+        # Interpolazione spostamento pixel
+        curr_off = int(p['off_s'] + (p['off_e'] - p['off_s']) * prog)
+        
+        # C. ESTRAZIONE FRAME (Con loop infinito automatico)
+        deck_frames = {i: c.get_frame(t % c.duration) for i, c in clips.items()}
+        
+        return apply_glitch_engine(deck_frames, weights, state['current_map'], 
+                                   curr_off, p['jitter'], p['j_indep'], p['orient'])
 
-            # 2. Selezione segmenti per durata finale (Randomizzazione Reale)
-            render_order = []
-            accumulated_time = 0
-            for seg in self.shuffled_order:
-                if max_total_duration and accumulated_time >= max_total_duration:
-                    break
-                render_order.append(seg)
-                accumulated_time += seg['duration']
-
-            # Limite di sicurezza software (max 800 clip simultanee)
-            if len(render_order) > 800:
-                render_order = render_order[:800]
-                st.info("💡 Limite di 800 frammenti raggiunto per garantire la stabilità.")
-
-            # 3. Creazione subclips
-            for i, seg in enumerate(render_order):
-                source = video_clips_originals[seg['video_id']]
-                # Subclip + Resize + FPS in un colpo solo
-                clip = (source.subclip(seg['start'], seg['end'])
-                        .resize(newsize=self.target_size)
-                        .set_fps(fps if fps else 24))
-                extracted_clips.append(clip)
-                
-                if progress_callback and i % 25 == 0:
-                    progress_callback(f"Elaborazione: {i}/{len(render_order)} pezzi")
-
-            # 4. Concatenazione e Scrittura Ultra-Veloce
-            final_video = concatenate_videoclips(extracted_clips, method="chain")
-            final_video.write_videofile(
-                output_path, 
-                fps=fps or 24, 
-                codec="libx264", 
-                audio_codec="aac",
-                preset="ultrafast", 
-                threads=4, 
-                logger=None
-            )
-            return True, output_path
-
-        except Exception as e:
-            return False, str(e)
-        finally:
-            # PULIZIA RAM: Fondamentale per evitare crash
-            for c in extracted_clips:
-                try: c.close()
-                except: pass
-            for v in video_clips_originals.values():
-                try: v.close()
-                except: pass
-
-def handle_multi_video():
-    st.header("🧪 Multi-Mix (Fino a 4 Video)")
+    # Creazione video finale
+    final_clip = VideoClip(make_frame, duration=duration).set_fps(fps)
     
-    col1, col2 = st.columns(2)
-    files = [col1.file_uploader(f"Video {i+1}", type=["mp4","mov","avi"]) for i in range(4)]
+    # Audio Master dal Deck 1 (tagliato alla durata esatta)
+    if clips[0].audio:
+        final_clip = final_clip.set_audio(clips[0].audio.subclip(0, min(duration, clips[0].duration)))
+
+    out_p = os.path.join(tempfile.gettempdir(), "glitch_master_render.mp4")
+    final_clip.write_videofile(out_p, codec="libx264", audio_codec="aac", preset="ultrafast", threads=4)
     
-    st.markdown("---")
-    st.subheader("🎲 Settaggi Ritmo e Random")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        ritmo = st.slider("Range durata frammenti (secondi)", 0.1, 2.0, (0.2, 0.4), step=0.1)
-        min_d, max_d = ritmo
-    with c2:
-        final_dur = st.number_input("Durata finale desiderata (sec)", 10, 600, 120)
-        seed = st.number_input("Seed (0 per random totale)", value=0)
-        fps_val = st.selectbox("FPS", [24, 30, 60], index=0)
+    # Pulizia memoria
+    for c in clips.values(): c.close()
+    return out_p
 
-    if st.button("🚀 GENERA MIX FRENETICO"):
-        valid_files = [f for f in files if f is not None]
-        if not valid_files:
-            st.error("Carica almeno un video!")
-            return
-
-        with st.spinner("Frullando i video..."):
-            shuffler = MultiVideoShuffler()
-            paths = {}
-            
-            # Salvataggio temporaneo
-            for i, f in enumerate(valid_files):
-                tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-                tfile.write(f.read())
-                paths[i] = tfile.name
-                
-                # Ottieni durata per segmentare
-                with VideoFileClip(tfile.name) as tmp:
-                    shuffler.add_video(i, f.name, tmp.duration, min_d, max_d)
-            
-            shuffler.shuffle(seed if seed != 0 else None)
-            
-            out_path = os.path.join(tempfile.gettempdir(), "mix_finale.mp4")
-            
-            success, msg = shuffler.process_videos(
-                paths, out_path, 
-                progress_callback=st.text, 
-                fps=fps_val, 
-                max_total_duration=final_dur
-            )
-            
-            if success:
-                st.success("✅ Mix completato!")
-                with open(out_path, "rb") as f:
-                    st.download_button("📥 Scarica il tuo Mix", f, "video_decomposed.mp4")
-            else:
-                st.error(f"Errore: {msg}")
-
+# --- 4. INTERFACCIA STREAMLIT ---
 def main():
-    st.set_page_config(page_title="VideoDecomposer PRO", layout="wide")
-    st.title("🎬 VideoDecomposer PRO")
-    handle_multi_video()
+    st.set_page_config(layout="wide", page_title="Glitch Engine V3")
+    st.title("📟 GLITCH ENGINE: DECOMPOSITION V3")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.header("🎬 Set Regia")
+        v_files = [st.file_uploader(f"Video Deck {i+1}", type=["mp4","mov"]) for i in range(4)]
+        ritmo = st.slider("Ritmo Stutter (sec)", 0.05, 1.0, (0.2, 0.4))
+        aspect = st.selectbox("Formato Schermo", ["16:9", "1:1", "9:16"])
+        
+        st.subheader("Automazione Presenza (Start ➔ End)")
+        d1_se = st.slider("Deck 1 %", 0, 100, (100, 0))
+        d2_se = st.slider("Deck 2 %", 0, 100, (0, 100))
+        d3_w = st.slider("Deck 3 Rumore %", 0, 100, 15)
+        d4_w = st.slider("Deck 4 Rumore %", 0, 100, 5)
+
+    with col2:
+        st.header("⚡ Set Distruzione")
+        orient = st.radio("Direzione Tagli", ["Orizzontale", "Verticale"])
+        thick = st.slider("Spessore Strisce (Min/Max px)", 1, 500, (5, 50))
+        is_rand = st.checkbox("Spessore Random 100%", value=True)
+        
+        st.subheader("Spostamento & Jitter")
+        off_se = st.slider("Offset Pixel (Start ➔ End)", 0, 1000, (0, 250))
+        jitter = st.slider("Intensità Tremore (Jitter)", 0, 150, 40)
+        j_indep = st.toggle("Tremore Indipendente (Granulare)", value=True)
+        
+        durata = st.number_input("Durata Totale (sec)", 1, 300, 10)
+
+    if st.button("🚀 GENERA VIDEO"):
+        paths = {}
+        for i, f in enumerate(v_files):
+            if f:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as t:
+                    t.write(f.read())
+                    paths[i] = t.name
+        
+        if len(paths) < 2:
+            st.error("Carica almeno i primi 2 Deck!")
+        else:
+            p = {
+                'durata': durata, 'ritmo': ritmo, 'aspect': aspect, 'orient': orient,
+                'd1_s': d1_se[0], 'd1_e': d1_se[1], 'd2_s': d2_se[0], 'd2_e': d2_se[1],
+                'd3_w': d3_w, 'd4_w': d4_w, 'thick': thick, 'rand': is_rand,
+                'off_s': off_se[0], 'off_e': off_se[1], 'jitter': jitter, 'j_indep': j_indep
+            }
+            with st.spinner("Scomposizione molecolare in corso..."):
+                result = run_full_render(paths, p)
+                st.video(result)
+                with open(result, "rb") as f:
+                    st.download_button("📥 Scarica Master", f, "glitch_render.mp4")
 
 if __name__ == "__main__":
     main()

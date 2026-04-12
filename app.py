@@ -1,145 +1,177 @@
 import streamlit as st
-import os, random, tempfile, cv2, time
-import numpy as np
+import os
+import random
+import tempfile
+import traceback
+from moviepy.editor import VideoFileClip, concatenate_videoclips
+from PIL import Image
 
-# --- 1. IMPORTAZIONE MOVIEPY 2.2.1 (FIX DEFINITIVO) ---
-import moviepy as mp
-# Accediamo ai componenti tramite il modulo principale per evitare ModuleNotFoundError
-from moviepy import VideoFileClip, VideoClip, AudioClip, concatenate_videoclips
+# Patch per compatibilità MoviePy/Pillow
+if hasattr(Image, 'Resampling'):
+    Image.ANTIALIAS = Image.Resampling.LANCZOS
+else:
+    Image.ANTIALIAS = Image.LANCZOS
 
-# --- 2. STRATEGIA FILL SCREEN (DA APP.PY ORIGINALE) ---
-def apply_fill_strategy(clip, target_w, target_h):
-    def frame_transform(get_frame, t):
-        frame = get_frame(t)
-        h, w, _ = frame.shape
-        # Scala per coprire tutto il canvas
-        scale = max(target_w / w, target_h / h)
-        nw, nh = int(w * scale), int(h * scale)
-        img_res = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
-        # Crop centrale
-        sy, sx = (img_res.shape[0] - target_h) // 2, (img_res.shape[1] - target_w) // 2
-        return img_res[sy:sy+target_h, sx:sx+target_w]
-    return clip.transform(frame_transform)
+class MultiVideoShuffler:
+    """Gestisce la segmentazione casuale e il montaggio di più video."""
+    def __init__(self):
+        self.all_segments = []
+        self.shuffled_order = []
+        self.target_size = None 
 
-# --- 3. LOGICA STRISCE (FILTRO OPZIONALE) ---
-def apply_strips_filter(segment, clips_dict, p, start_in_original):
-    tw, th = p['size']
-    dim = th if p['orient'] == "Orizzontale" else tw
-    grid, curr = [], 0
-    while curr < dim:
-        thick = random.randint(p['thick'][0], p['thick'][1])
-        grid.append((curr, int(min(curr + thick, dim))))
-        curr = int(min(curr + thick, dim))
+    def add_video(self, video_id, video_name, total_duration, min_dur, max_dur):
+        """Taglia il video in pezzi con durata casuale tra min_dur e max_dur."""
+        current_time = 0
+        added_count = 0
+        
+        while current_time < total_duration:
+            # Sceglie una durata random nel range impostato (es. tra 0.2 e 0.4)
+            seg_dur = random.uniform(min_dur, max_dur)
+            end_time = min(current_time + seg_dur, total_duration)
+            
+            # Evitiamo micro-frammenti quasi invisibili
+            if end_time - current_time > 0.05:
+                self.all_segments.append({
+                    'video_id': video_id,
+                    'video_name': video_name,
+                    'start': current_time,
+                    'end': end_time,
+                    'duration': end_time - current_time
+                })
+                added_count += 1
+            current_time = end_time
+        return added_count
 
-    def make_glitch_frame(get_frame, t):
-        out = np.zeros((th, tw, 3), dtype=np.uint8)
-        # Protezione pesi: mai somma zero
-        raw_w = [p['d1'], p['d2'], 10, 5]
-        valid_ids = list(clips_dict.keys())
-        active_weights = [max(0.1, float(raw_w[i])) for i in valid_ids]
+    def shuffle(self, seed=None):
+        """Mescola tutti i segmenti di tutti i video caricati."""
+        if seed is not None and seed != 0:
+            random.seed(seed)
+        self.shuffled_order = list(self.all_segments)
+        random.shuffle(self.shuffled_order)
 
-        frames = {}
-        for i, c in clips_dict.items():
-            f = c.get_frame((start_in_original + t) % c.duration)
-            # Resize veloce per le strisce
-            fh, fw, _ = f.shape
-            scale = max(tw/fw, th/fh)
-            f_res = cv2.resize(f, (int(fw*scale), int(fh*scale)))
-            sy, sx = (f_res.shape[0]-th)//2, (f_res.shape[1]-tw)//2
-            frames[i] = f_res[sy:sy+th, sx:sx+tw]
+    def process_videos(self, video_paths, output_path, progress_callback=None, fps=None, max_total_duration=None):
+        """Montaggio finale ottimizzato per evitare crash di memoria."""
+        video_clips_originals = {}
+        extracted_clips = []
+        
+        try:
+            # 1. Apertura flussi video
+            for v_id, path in video_paths.items():
+                video_clips_originals[v_id] = VideoFileClip(path)
+            
+            # Risoluzione basata sul primo video
+            self.target_size = video_clips_originals[next(iter(video_clips_originals))].size
 
-        for (s, e) in grid:
-            chosen = random.choices(valid_ids, weights=active_weights)[0]
-            if p['orient'] == "Orizzontale":
-                out[s:e, :] = frames[chosen][s:e, :]
-            else:
-                out[:, s:e] = frames[chosen][:, s:e]
-        return out
-    return segment.transform(make_glitch_frame)
+            # 2. Selezione segmenti per durata finale (Randomizzazione Reale)
+            render_order = []
+            accumulated_time = 0
+            for seg in self.shuffled_order:
+                if max_total_duration and accumulated_time >= max_total_duration:
+                    break
+                render_order.append(seg)
+                accumulated_time += seg['duration']
 
-# --- 4. MOTORE DI RENDERING (STRUTTURA APP.PY) ---
-def process_video(video_paths, p):
-    clips = {i: VideoFileClip(path) for i, path in video_paths.items()}
-    tw, th = p['size']
-    final_segments = []
-    current_time = 0
+            # Limite di sicurezza software (max 800 clip simultanee)
+            if len(render_order) > 800:
+                render_order = render_order[:800]
+                st.info("💡 Limite di 800 frammenti raggiunto per garantire la stabilità.")
+
+            # 3. Creazione subclips
+            for i, seg in enumerate(render_order):
+                source = video_clips_originals[seg['video_id']]
+                # Subclip + Resize + FPS in un colpo solo
+                clip = (source.subclip(seg['start'], seg['end'])
+                        .resize(newsize=self.target_size)
+                        .set_fps(fps if fps else 24))
+                extracted_clips.append(clip)
+                
+                if progress_callback and i % 25 == 0:
+                    progress_callback(f"Elaborazione: {i}/{len(render_order)} pezzi")
+
+            # 4. Concatenazione e Scrittura Ultra-Veloce
+            final_video = concatenate_videoclips(extracted_clips, method="chain")
+            final_video.write_videofile(
+                output_path, 
+                fps=fps or 24, 
+                codec="libx264", 
+                audio_codec="aac",
+                preset="ultrafast", 
+                threads=4, 
+                logger=None
+            )
+            return True, output_path
+
+        except Exception as e:
+            return False, str(e)
+        finally:
+            # PULIZIA RAM: Fondamentale per evitare crash
+            for c in extracted_clips:
+                try: c.close()
+                except: pass
+            for v in video_clips_originals.values():
+                try: v.close()
+                except: pass
+
+def handle_multi_video():
+    st.header("🧪 Multi-Mix (Fino a 4 Video)")
     
-    while current_time < p['durata']:
-        # Durata segmento (Ritmo)
-        r = p['ritmo']
-        seg_dur = random.uniform(r[0], r[1]) if isinstance(r, (list, tuple)) else r
-        seg_dur = min(seg_dur, p['durata'] - current_time)
-
-        # Scelta deck (Pesi sicuri per evitare errore "Weights > 0")
-        raw_w = [p['d1'], p['d2'], 10, 5]
-        valid_ids = list(clips.keys())
-        active_weights = [max(0.1, float(raw_w[i])) for i in valid_ids]
-        main_id = random.choices(valid_ids, weights=active_weights)[0]
-
-        # Sottoclip + Strategia FILL di app.py
-        start_pos = random.uniform(0, max(0, clips[main_id].duration - seg_dur))
-        seg = clips[main_id].subclipped(start_pos, start_pos + seg_dur)
-        seg = apply_fill_strategy(seg, tw, th)
-
-        if p['usa_strisce']:
-            seg = apply_strips_filter(seg, clips, p, start_pos)
-
-        final_segments.append(seg)
-        current_time += seg_dur
-
-    # Concatenazione finale (Metodo solido)
-    final_video = concatenate_videoclips(final_segments, method="compose")
-    out_p = os.path.join(tempfile.gettempdir(), f"output_{int(time.time())}.mp4")
-    final_video.write_videofile(out_p, fps=24, codec="libx264", audio_codec="aac", logger=None)
+    col1, col2 = st.columns(2)
+    files = [col1.file_uploader(f"Video {i+1}", type=["mp4","mov","avi"]) for i in range(4)]
     
-    for c in clips.values(): c.close()
-    return out_p
-
-# --- 5. INTERFACCIA STREAMLIT ---
-def main():
-    st.set_page_config(layout="wide")
-    st.title("📟 VIDEO DECOMPOSER V5 - STABILE")
+    st.markdown("---")
+    st.subheader("🎲 Settaggi Ritmo e Random")
     
     c1, c2 = st.columns(2)
     with c1:
-        usa_strisce = st.toggle("SCOMPOSIZIONE (STRISCE)", value=True)
-        v_files = [st.file_uploader(f"Video {i+1}", type=["mp4","mov"]) for i in range(4)]
-        ritmo = st.slider("Ritmo di Taglio (sec)", 0.05, 1.0, (0.1, 0.3))
-        aspect = st.selectbox("Formato FILL", ["16:9", "1:1", "9:16"])
-        
+        ritmo = st.slider("Range durata frammenti (secondi)", 0.1, 2.0, (0.2, 0.4), step=0.1)
+        min_d, max_d = ritmo
     with c2:
-        d1 = st.slider("Peso Deck 1", 0, 100, 100)
-        d2 = st.slider("Peso Deck 2", 0, 100, 50)
-        durata = st.number_input("Durata Totale", 1, 60, 10)
-        if usa_strisce:
-            thick = st.slider("Spessore Strisce", 1, 300, (10, 40))
-            orient = st.radio("Direzione", ["Orizzontale", "Verticale"])
-        else:
-            thick, orient = (10, 40), "Orizzontale"
+        final_dur = st.number_input("Durata finale desiderata (sec)", 10, 600, 120)
+        seed = st.number_input("Seed (0 per random totale)", value=0)
+        fps_val = st.selectbox("FPS", [24, 30, 60], index=0)
 
-    if st.button("🚀 GENERA VIDEO"):
-        paths = {}
-        for i, f in enumerate(v_files):
-            if f:
-                t = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                t.write(f.read())
-                paths[i] = t.name
-        
-        if not paths: st.error("Carica i video!"); return
-        
-        res_map = {"16:9": (1280, 720), "1:1": (720, 720), "9:16": (405, 720)}
-        params = {
-            'durata': durata, 'ritmo': ritmo, 'size': res_map[aspect],
-            'd1': d1, 'd2': d2, 'thick': thick, 'orient': orient, 'usa_strisce': usa_strisce
-        }
-        
-        with st.spinner("Rendering..."):
-            try:
-                res = process_video(paths, params)
-                st.video(res)
-                st.download_button("Download", open(res, "rb"), "video.mp4")
-                for p in paths.values(): os.unlink(p)
-            except Exception as e:
-                st.error(f"Errore: {e}")
+    if st.button("🚀 GENERA MIX FRENETICO"):
+        valid_files = [f for f in files if f is not None]
+        if not valid_files:
+            st.error("Carica almeno un video!")
+            return
 
-if __name__ == "__main__": main()
+        with st.spinner("Frullando i video..."):
+            shuffler = MultiVideoShuffler()
+            paths = {}
+            
+            # Salvataggio temporaneo
+            for i, f in enumerate(valid_files):
+                tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                tfile.write(f.read())
+                paths[i] = tfile.name
+                
+                # Ottieni durata per segmentare
+                with VideoFileClip(tfile.name) as tmp:
+                    shuffler.add_video(i, f.name, tmp.duration, min_d, max_d)
+            
+            shuffler.shuffle(seed if seed != 0 else None)
+            
+            out_path = os.path.join(tempfile.gettempdir(), "mix_finale.mp4")
+            
+            success, msg = shuffler.process_videos(
+                paths, out_path, 
+                progress_callback=st.text, 
+                fps=fps_val, 
+                max_total_duration=final_dur
+            )
+            
+            if success:
+                st.success("✅ Mix completato!")
+                with open(out_path, "rb") as f:
+                    st.download_button("📥 Scarica il tuo Mix", f, "video_decomposed.mp4")
+            else:
+                st.error(f"Errore: {msg}")
+
+def main():
+    st.set_page_config(page_title="VideoDecomposer PRO", layout="wide")
+    st.title("🎬 VideoDecomposer PRO")
+    handle_multi_video()
+
+if __name__ == "__main__":
+    main()

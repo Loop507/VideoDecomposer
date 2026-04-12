@@ -1,3 +1,4 @@
 streamlit
-opencv-python-headless
 moviepy
+opencv-python-headless
+numpy

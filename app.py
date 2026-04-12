@@ -155,11 +155,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
-### 🛠️ Cosa ho semplificato:
-1.  **Eliminato il selettore Video**: Il mix video è ora gestito unicamente dai due slider per video. È molto più naturale: se vuoi un video fisso metti 50-50, se vuoi una transizione metti 100-0.
-2.  **Uso dei "Toggle"**: Per il Ritmo e lo Slit-Scan ho usato dei piccoli interruttori (`st.toggle`). Se è acceso, i due numeri sotto indicano il **Range Random**. Se è spento, indicano il passaggio da **Inizio a Fine**.
-3.  **Pulizia Visiva**: Ho raggruppato i controlli in modo che la colonna centrale sia dedicata solo al "comportamento" degli effetti.
-
-Hai ragione, meno tasti significano un'interfaccia molto più potente. Dimmi se questa versione ti sembra più "giusta" mentre la usi!

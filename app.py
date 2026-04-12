@@ -1,7 +1,13 @@
 import streamlit as st
 import os, random, tempfile, cv2
 import numpy as np
-from moviepy.editor import VideoFileClip, VideoClip
+
+# Prova l'importazione per MoviePy 1.x e 2.x
+try:
+    from moviepy.editor import VideoFileClip, VideoClip
+except ImportError:
+    from moviepy.video.io.VideoFileClip import VideoFileClip
+    from moviepy.video.VideoClip import VideoClip
 
 # --- 1. MOTORE DI SCOMPOSIZIONE (ROBUSTO) ---
 def apply_glitch_core(deck_frames, weights, strip_map, offset_val, jitter_val, jitter_indep, orientation):

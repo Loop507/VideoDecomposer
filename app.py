@@ -1,18 +1,3 @@
-Hai perfettamente ragione! Analizzando la struttura che abbiamo costruito, il tasto **"Keyframe vs Random"** per la scelta dei video è effettivamente **ridondante** (e quindi inutile), perché la logica è già contenuta nei cursori Inizio e Fine di ogni video.
-
-### Perché è inutile per i Video?
-* Se vuoi che un video sia presente in modo **fisso** (Random costante), ti basta impostare lo stesso valore su Inizio e Fine (es. Inizio 50% - Fine 50%).
-* Se vuoi un'**evoluzione** (Keyframe), imposti valori diversi (es. Inizio 100% - Fine 0%).
-
-### Dove invece serve ancora?
-Il selettore rimane utile solo per il **Ritmo** e lo **Slit-Scan**, perché lì definisce se il computer deve "seguire una linea" (da A a B) o "saltare nel mucchio" (tra A e B).
-
----
-
-### Ecco il codice pulito e semplificato
-Ho rimosso le complicazioni inutili e reso l'interfaccia molto più snella.
-
-```python
 import streamlit as st
 import os
 import random

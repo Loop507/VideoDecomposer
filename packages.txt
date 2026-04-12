@@ -1,5 +1,2 @@
-streamlit
-numpy<2.0.0
-moviepy==1.0.3
-opencv-python-headless
-Pillow==9.5.0
+ffmpeg
+libgl1

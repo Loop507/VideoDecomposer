@@ -18,7 +18,6 @@ def apply_procedural_slit_scan(get_frame, t, duration, start_strand, end_strand,
     h, w, _ = frame.shape
     progress = t / duration
     
-    # Interpolazione spessore strisce
     current_strand = start_strand + (end_strand - start_strand) * progress
     current_strand = max(1, current_strand)
     
@@ -60,7 +59,7 @@ class AdvancedKeyframeShuffler:
             self.video_clips[i] = VideoFileClip(p)
         return self.video_clips[next(iter(self.video_clips))].size
 
-    def generate_video(self, weights, ritmi, duration, fps, strand_kf, mode, p_bar):
+    def generate_video(self, weights, ritmi, duration, fps, strand_kf, mode, p_bar, use_slit_scan):
         curr_t = 0
         clips = []
         target_size = self.video_clips[next(iter(self.video_clips))].size
@@ -68,48 +67,44 @@ class AdvancedKeyframeShuffler:
         while curr_t < duration:
             progress = curr_t / duration
             
-            # 1. KEYFRAME RITMO (Taglio dinamico)
+            # Keyframe Ritmo
             r_start, r_end = ritmi
             current_ritmo = r_start + (r_end - r_start) * progress
-            # Applichiamo una variazione random intorno al ritmo corrente
             seg_dur = random.uniform(current_ritmo * 0.7, current_ritmo * 1.3)
             
-            # 2. KEYFRAME PESI VIDEO
+            # Keyframe Pesi Video
             w_list = []
             for i in range(len(self.video_clips)):
                 ws, we = weights.get(i, (0, 0))
                 w_list.append(ws + (we - ws) * progress)
             
-            # Se tutti i pesi sono 0, bilanciamo
             if sum(w_list) == 0: w_list = [1] * len(w_list)
             
-            # Scelta del video
             v_idx = random.choices(list(self.video_clips.keys()), weights=w_list, k=1)[0]
             source = self.video_clips[v_idx]
             
-            # Estrazione segmento casuale dalla sorgente
             start_p = random.uniform(0, max(0, source.duration - seg_dur))
             clip = source.subclip(start_p, start_p + seg_dur).resize(newsize=target_size).set_fps(fps)
             
             clips.append(clip)
             curr_t += seg_dur
             
-            # Update Progress Bar (Fase Assemblaggio)
-            p_bar.progress(min(curr_t / duration * 0.4, 0.4), text=f"Montaggio: {int(curr_t)}s / {duration}s")
+            p_bar.progress(min(curr_t / duration * 0.4, 0.4), text=f"Assemblaggio: {int(curr_t)}s / {duration}s")
 
         final = concatenate_videoclips(clips, method="chain").set_duration(duration)
         
-        # 3. KEYFRAME EFFETTO PIXEL
-        final = final.fl(lambda gf, t: apply_procedural_slit_scan(
-            gf, t, final.duration, strand_kf[0], strand_kf[1], mode
-        ))
+        # APPLICAZIONE EFFETTO SOLO SE IL SELECTOR È ATTIVO
+        if use_slit_scan:
+            final = final.fl(lambda gf, t: apply_procedural_slit_scan(
+                gf, t, final.duration, strand_kf[0], strand_kf[1], mode
+            ))
         
         return final
 
 # --- INTERFACCIA ---
 def main():
     st.set_page_config(page_title="VideoDecomposer PRO", layout="wide")
-    st.title("🧪 VideoDecomposer: Full Keyframe Engine")
+    st.title("🎬 VideoDecomposer: Regia e Pixel Engine")
 
     with st.sidebar:
         st.header("📁 Sorgenti")
@@ -119,7 +114,7 @@ def main():
     
     weights = {}
     with c1:
-        st.subheader("📊 Keyframe Presenza Video")
+        st.subheader("📊 Keyframe Video")
         for i in range(4):
             if files[i]:
                 st.write(f"Video {i+1}")
@@ -129,17 +124,21 @@ def main():
                 weights[i] = (ws, we)
 
     with c2:
-        st.subheader("⏱️ Keyframe Ritmo (Tagli)")
+        st.subheader("⏱️ Keyframe Ritmo")
         r_start = st.slider("Ritmo Inizio (sec)", 0.1, 2.0, 0.2)
         r_end = st.slider("Ritmo Fine (sec)", 0.1, 2.0, 0.8)
         
-        st.subheader("🌀 Keyframe Slit-Scan")
-        s_strand = st.slider("Spessore Inizio", 1, 150, 10)
-        e_strand = st.slider("Spessore Fine", 1, 150, 50)
-        direzione = st.selectbox("Asse", ["Orizzontale", "Verticale", "Mix"])
+        st.markdown("---")
+        st.subheader("🌀 Configurazione Slit-Scan")
+        # --- IL SELECTOR RICHIESTO ---
+        attiva_strisce = st.checkbox("ATTIVA EFFETTO STRISCE", value=True)
+        
+        s_strand = st.slider("Spessore Inizio", 1, 150, 10, disabled=not attiva_strisce)
+        e_strand = st.slider("Spessore Fine", 1, 150, 50, disabled=not attiva_strisce)
+        direzione = st.selectbox("Direzione", ["Orizzontale", "Verticale", "Mix"], disabled=not attiva_strisce)
 
     with c3:
-        st.subheader("⚙️ Configurazione Finale")
+        st.subheader("⚙️ Output Finale")
         durata = st.number_input("Durata Totale (sec)", 5, 120, 20)
         fps = st.selectbox("FPS", [24, 30])
         btn = st.button("🚀 AVVIA RENDERING", use_container_width=True)
@@ -162,12 +161,14 @@ def main():
             engine = AdvancedKeyframeShuffler()
             engine.load_sources(paths)
             
+            # Passiamo lo stato del selector alla funzione di generazione
             final_v = engine.generate_video(
-                weights, (r_start, r_end), durata, fps, (s_strand, e_strand), direzione, p_bar
+                weights, (r_start, r_end), durata, fps, (s_strand, e_strand), direzione, p_bar, attiva_strisce
             )
             
             out = os.path.join(tempfile.gettempdir(), "final_render.mp4")
-            p_bar.progress(0.5, text="Rendering Pixel e Encoding (Fase Lenta)...")
+            label = "Rendering Pixel & Encoding..." if attiva_strisce else "Esportazione Montaggio..."
+            p_bar.progress(0.5, text=label)
             
             final_v.write_videofile(out, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
             

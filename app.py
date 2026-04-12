@@ -50,7 +50,7 @@ def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, 
             current_x = next_x
     return frame
 
-# --- LOGICA DI MONTAGGIO CON REPORT ---
+# --- LOGICA DI MONTAGGIO ---
 class VideoEngine:
     def __init__(self):
         self.video_clips = {}
@@ -70,10 +70,7 @@ class VideoEngine:
 
         while curr_t < duration:
             progress = curr_t / duration
-            if r_rand:
-                seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b))
-            else:
-                seg_dur = r_a + (r_b - r_a) * progress
+            seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b)) if r_rand else r_a + (r_b - r_a) * progress
             
             w_list = [weights[i][0] + (weights[i][1] - weights[i][0]) * progress for i in range(len(self.video_clips))]
             if sum(w_list) == 0: w_list = [1] * len(w_list)
@@ -86,7 +83,7 @@ class VideoEngine:
             clips.append(clip)
             curr_t += seg_dur
             self.stats["fragments"] += 1
-            p_bar.progress(min(curr_t / duration * 0.4, 0.4), text=f"Frammento {self.stats['fragments']}...")
+            p_bar.progress(min(curr_t / duration * 0.4, 0.4), text=f"Composizione: {self.stats['fragments']} pezzi")
 
         final = concatenate_videoclips(clips, method="chain").set_duration(duration)
         if use_scan:
@@ -96,7 +93,12 @@ class VideoEngine:
 # --- INTERFACCIA ---
 def main():
     st.set_page_config(page_title="VideoDecomposer PRO", layout="wide")
-    st.title("🎬 VideoDecomposer & Report Engine")
+    st.title("🎬 VideoDecomposer: Rendering & Report")
+
+    # Memoria di sessione per evitare che i file spariscano
+    if 'video_ready' not in st.session_state: st.session_state.video_ready = False
+    if 'report_data' not in st.session_state: st.session_state.report_data = ""
+    if 'video_path' not in st.session_state: st.session_state.video_path = ""
 
     with st.sidebar:
         st.header("📁 Sorgenti")
@@ -108,88 +110,75 @@ def main():
         st.subheader("📊 Mix Video")
         for i in range(4):
             if files[i]:
-                st.write(f"**V{i+1}: {files[i].name[:10]}**")
+                st.write(f"**V{i+1}: {files[i].name[:12]}**")
                 s, e = st.columns(2)
                 ws = s.slider("Start %", 0, 100, 100 if i==0 else 0, key=f"ws{i}")
                 we = e.slider("End %", 0, 100, 0 if i==0 else 100, key=f"we{i}")
                 weights[i] = (ws, we)
 
     with c2:
-        st.subheader("⏱️ Ritmo")
+        st.subheader("⏱️ Ritmo e Strisce")
         r_rand = st.toggle("Ritmo Random")
         r_col1, r_col2 = st.columns(2)
-        r_a = r_col1.number_input("Start/Min (s)", 0.05, 5.0, 0.2)
-        r_b = r_col2.number_input("End/Max (s)", 0.05, 5.0, 1.0)
+        r_a = r_col1.number_input("Inizio/Min (s)", 0.05, 5.0, 0.2)
+        r_b = r_col2.number_input("Fine/Max (s)", 0.05, 5.0, 1.0)
         
         st.markdown("---")
-        st.subheader("🌀 Slit-Scan")
         use_scan = st.checkbox("ATTIVA STRISCE", value=True)
         s_rand = st.toggle("Spessore Random", disabled=not use_scan)
         s_col1, s_col2 = st.columns(2)
-        s_a = s_col1.number_input("Start/Min (px)", 1, 300, 10, disabled=not use_scan)
-        s_b = s_col2.number_input("End/Max (px)", 1, 300, 80, disabled=not use_scan)
+        s_a = s_col1.number_input("Inizio/Min (px)", 1, 300, 10, disabled=not use_scan)
+        s_b = s_col2.number_input("Fine/Max (px)", 1, 300, 80, disabled=not use_scan)
         scan_dir = st.selectbox("Asse", ["Orizzontale", "Verticale", "Mix"], disabled=not use_scan)
 
     with c3:
         st.subheader("⚙️ Esportazione")
-        durata = st.number_input("Durata Totale (s)", 5, 300, 20)
+        durata = st.number_input("Durata Totale (s)", 5, 300, 15)
         fps = st.selectbox("FPS", [24, 30])
-        btn = st.button("🚀 GENERA VIDEO & REPORT", use_container_width=True)
-
-    if btn:
-        paths = {i: tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name for i, f in enumerate(files) if f}
-        file_names = {i: f.name for i, f in enumerate(files) if f}
-        for i, f in enumerate(files):
-            if f:
-                with open(paths[i], "wb") as tf: tf.write(f.read())
         
-        if not paths: st.error("Carica i video!"); return
-        
-        p_bar = st.progress(0, text="Inizio...")
-        try:
-            engine = VideoEngine()
-            engine.load_sources(paths)
-            final = engine.generate(weights, r_a, r_b, r_rand, durata, fps, s_a, s_b, s_rand, scan_dir, p_bar, use_scan)
+        if st.button("🚀 GENERA TUTTO", use_container_width=True):
+            paths = {i: tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name for i, f in enumerate(files) if f}
+            file_names = [f.name for f in files if f]
+            for i, f in enumerate(files):
+                if f:
+                    with open(paths[i], "wb") as tf: tf.write(f.read())
             
-            out_v = os.path.join(tempfile.gettempdir(), "final_v.mp4")
-            final.write_videofile(out_v, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
+            if not paths: st.error("Carica i video!"); return
             
-            # --- CREAZIONE REPORT TXT ---
-            report_content = f"""VIDEO DECOMPOSER REPORT
-DATA: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
---------------------------------------
-SORGENTI PROCESSATE: {engine.stats['sources']}
-FILENAMES: {list(file_names.values())}
-
-DETTAGLI MONTAGGIO:
-- Durata Finale: {durata} secondi
-- Frammenti Estratti: {engine.stats['fragments']}
-- Ritmo: {"Random" if r_rand else "Keyframe"} (Range: {r_a}s - {r_b}s)
-- FPS: {fps}
-
-EFFETTI PIXEL (SLIT-SCAN):
-- Stato: {"ATTIVO" if use_scan else "DISATTIVATO"}
-- Modalità: {"Random" if s_rand else "Keyframe"}
-- Spessore Strisce: {s_a}px a {s_b}px
-- Direzione: {scan_dir}
-
-KEYFRAMES PESI VIDEO:
-{chr(10).join([f"Video {k+1}: Start {v[0]}% -> End {v[1]}%" for k, v in weights.items()])}
---------------------------------------
-GENERATO CON VIDEODECOMPOSER AI
-"""
-            st.success("✅ Tutto pronto!")
-            st.video(out_v)
-            
-            # Pulsanti di download
-            c_down1, c_down2 = st.columns(2)
-            with c_down1:
-                with open(out_v, "rb") as f:
-                    st.download_button("📥 Scarica Video", f, "video_decomposed.mp4")
-            with c_down2:
-                st.download_button("📝 Scarica Report TXT", report_content, "report_generazione.txt")
+            p_bar = st.progress(0, text="Lavorando...")
+            try:
+                engine = VideoEngine()
+                engine.load_sources(paths)
+                final = engine.generate(weights, r_a, r_b, r_rand, durata, fps, s_a, s_b, s_rand, scan_dir, p_bar, use_scan)
                 
-        except Exception as e: st.error(f"Errore: {e}")
+                # Salvataggio in cartella temporanea persistente per la sessione
+                out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,999)}.mp4")
+                final.write_videofile(out_v, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
+                
+                # Salva i dati nella sessione
+                st.session_state.video_path = out_v
+                st.session_state.report_data = f"""REPORT GENERAZIONE - {datetime.now().strftime('%H:%M:%S')}
+-----------------------------------------
+Frammenti: {engine.stats['fragments']} | Sorgenti: {engine.stats['sources']}
+Files: {file_names}
+Ritmo: {r_a}s -> {r_b}s (Random: {r_rand})
+Strisce: {s_a}px -> {s_b}px (Random: {s_rand})
+-----------------------------------------"""
+                st.session_state.video_ready = True
+                
+            except Exception as e: st.error(f"Errore: {e}")
+
+        # MOSTRA I RISULTATI SE DISPONIBILI NELLA SESSIONE
+        if st.session_state.video_ready:
+            st.markdown("---")
+            st.video(st.session_state.video_path)
+            
+            c_d1, c_d2 = st.columns(2)
+            with c_d1:
+                with open(st.session_state.video_path, "rb") as f:
+                    st.download_button("📥 Scarica Video", f, "video.mp4", key="down_v")
+            with c_d2:
+                st.download_button("📝 Scarica Report", st.session_state.report_data, "report.txt", key="down_t")
 
 if __name__ == "__main__":
     main()

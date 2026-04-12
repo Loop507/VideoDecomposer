@@ -1,7 +1,17 @@
 import streamlit as st
 import os, random, tempfile, cv2, time
 import numpy as np
-from moviepy.editor import VideoFileClip, VideoClip
+
+# Tenta l'importazione per MoviePy 1.x e 2.x in modo aggressivo
+try:
+    from moviepy.editor import VideoFileClip, VideoClip
+except (ImportError, ModuleNotFoundError):
+    try:
+        from moviepy.video.io.VideoFileClip import VideoFileClip
+        from moviepy.video.VideoClip import VideoClip
+    except (ImportError, ModuleNotFoundError):
+        st.error("Errore critico: MoviePy non è stato installato correttamente dal server.")
+        st.stop()
 
 # --- 1. FUNZIONE LOGICA SCOMPOSIZIONE (IL "MOSAICO") ---
 def apply_decomposition(frames, weights, grid, offset, jitter, j_indep, orient, active_glitch):

@@ -155,15 +155,29 @@ def main():
                 out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,999)}.mp4")
                 final.write_videofile(out_v, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
                 
-                # Salva i dati nella sessione
+                # --- NUOVO REPORT BRANDIZZATO ---
                 st.session_state.video_path = out_v
-                st.session_state.report_data = f"""REPORT GENERAZIONE - {datetime.now().strftime('%H:%M:%S')}
------------------------------------------
-Frammenti: {engine.stats['fragments']} | Sorgenti: {engine.stats['sources']}
-Files: {file_names}
-Ritmo: {r_a}s -> {r_b}s (Random: {r_rand})
-Strisce: {s_a}px -> {s_b}px (Random: {s_rand})
------------------------------------------"""
+                st.session_state.report_data = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
+
+:: STILE: Minimalismo Computazionale / Glitch Brutalista
+:: MOTORE: video_decomposed [01.01]
+:: AUDIO: 48 kHz / Float a 32 bit / Punto di Clipping
+:: PROCESSO: Collasso Ricorsivo
+
+---
+> TECHNICAL LOG SHEET:
+* Sorgenti Video: {engine.stats['sources']}
+* Frammenti Generati: {engine.stats['fragments']}
+* Ritmo: {r_a}s >> {r_b}s (Random: {r_rand})
+* Strisce: {s_a}px >> {s_b}px (Random: {s_rand})
+* Geometria: {scan_dir}
+
+"Non è montaggio. È anatomia di un segnale corrotto."
+
+> Regia e Algoritmo: Loop507
+
+#Loop507 #DataNoise #Decomposition #GlitchArt #AudioVisual #NoiseMusic #AlgorithmicVideo #Brutalist #SoundDesign #ComputationalMinimalism #SignalCorruption #RecursiveCollapse #NewMediaArt
+"""
                 st.session_state.video_ready = True
                 
             except Exception as e: st.error(f"Errore: {e}")

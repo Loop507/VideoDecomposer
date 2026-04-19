@@ -189,12 +189,20 @@ def main():
         fps    = st.selectbox("FPS", [24, 30])
 
         st.markdown("---")
-        # AUDIO SYNC — toggle + uploader
+        # AUDIO SYNC — toggle + uploader + scelta traccia
         beat_sync = st.toggle("A tempo di musica", value=False,
             help="Carica un audio: i tagli seguiranno i beat e le strisce seguiranno il volume.")
         audio_file = None
+        use_custom_audio = False
         if beat_sync:
             audio_file = st.file_uploader("Audio (mp3/wav)", type=["mp3","wav"])
+            if audio_file:
+                audio_choice = st.radio(
+                    "Traccia audio nel video finale",
+                    ["Audio originale dei video", "Usa la musica caricata"],
+                    index=0
+                )
+                use_custom_audio = (audio_choice == "Usa la musica caricata")
 
         st.markdown("---")
 
@@ -229,6 +237,21 @@ def main():
                     beat_times=beat_times, rms_envelope=rms_envelope
                 )
 
+                # Sostituisce traccia audio se richiesto
+                if beat_sync and audio_file and use_custom_audio:
+                    from moviepy.editor import AudioFileClip
+                    from moviepy.audio.fx.all import audio_loop
+                    audio_file.seek(0)
+                    tmp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                    tmp_audio.write(audio_file.read())
+                    tmp_audio.close()
+                    audio_clip = AudioFileClip(tmp_audio.name)
+                    if audio_clip.duration < durata:
+                        audio_clip = audio_loop(audio_clip, duration=durata)
+                    else:
+                        audio_clip = audio_clip.set_duration(durata)
+                    final = final.set_audio(audio_clip)
+
                 # Scrittura video finale
                 out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,9999)}.mp4")
                 p_bar.progress(0.75, text="Scrittura video...")
@@ -261,7 +284,7 @@ def main():
 * Ritmo: {r_a}s >> {r_b}s (Random: {r_rand})
 * Strisce: {s_a}px >> {s_b}px (Random: {s_rand})
 * Geometria: {scan_dir}
-* Beat Sync: {'ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else 'OFF'}
+{'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
 

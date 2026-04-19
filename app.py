@@ -99,6 +99,7 @@ def main():
     if 'video_ready' not in st.session_state: st.session_state.video_ready = False
     if 'report_data' not in st.session_state: st.session_state.report_data = ""
     if 'video_path' not in st.session_state: st.session_state.video_path = ""
+    if 'preview_path' not in st.session_state: st.session_state.preview_path = ""
 
     with st.sidebar:
         st.header("📁 Sorgenti")
@@ -151,20 +152,34 @@ def main():
                 engine.load_sources(paths)
                 final = engine.generate(weights, r_a, r_b, r_rand, durata, fps, s_a, s_b, s_rand, scan_dir, p_bar, use_scan)
                 
-                # Salvataggio in cartella temporanea persistente per la sessione
+                # Salvataggio video finale
                 out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,999)}.mp4")
+                p_bar.progress(0.8, text="Scrittura video...")
                 final.write_videofile(out_v, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
-                
-                # --- NUOVO REPORT BRANDIZZATO ---
-                st.session_state.video_path = out_v
-                st.session_state.report_data = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 
+                # Pausa per garantire flush completo prima di qualsiasi lettura
+                import time
+                time.sleep(1.5)
+
+                # Preview ridotta a 480p — meno RAM, caricamento veloce
+                p_bar.progress(0.92, text="Generando preview...")
+                prev_v = os.path.join(tempfile.gettempdir(), f"preview_{random.randint(0,999)}.mp4")
+                prev_clip = final.resize(height=480)
+                prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
+                prev_clip.close()
+                time.sleep(0.5)
+
+                final.close()
+                p_bar.progress(1.0, text="Pronto!")
+
+                st.session_state.video_path = out_v
+                st.session_state.preview_path = prev_v
+                st.session_state.report_data = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
 :: MOTORE: video_decomposed [01.01]
 :: AUDIO: 48 kHz / Float a 32 bit / Punto di Clipping
 :: PROCESSO: Collasso Ricorsivo
 
----
 > TECHNICAL LOG SHEET:
 * Sorgenti Video: {engine.stats['sources']}
 * Frammenti Generati: {engine.stats['fragments']}
@@ -176,21 +191,24 @@ def main():
 
 > Regia e Algoritmo: Loop507
 
-#Loop507 #DataNoise #Decomposition #GlitchArt #AudioVisual #NoiseMusic #AlgorithmicVideo #Brutalist #SoundDesign #ComputationalMinimalism #SignalCorruption #RecursiveCollapse #NewMediaArt
+#loop507 #datanoise #decomposition #glitchart #audiovisual #noisemusic #algorithmicvideo #brutalist #sounddesign #computationalminimalism #signalcorruption #recursivecollapse #newmediaart
 """
                 st.session_state.video_ready = True
-                
+
             except Exception as e: st.error(f"Errore: {e}")
 
         # MOSTRA I RISULTATI SE DISPONIBILI NELLA SESSIONE
         if st.session_state.video_ready:
             st.markdown("---")
-            st.video(st.session_state.video_path)
-            
+            st.caption("👁️ Preview (480p) — scarica il video per la versione completa")
+            if st.session_state.preview_path and os.path.exists(st.session_state.preview_path):
+                st.video(st.session_state.preview_path)
+
             c_d1, c_d2 = st.columns(2)
             with c_d1:
-                with open(st.session_state.video_path, "rb") as f:
-                    st.download_button("📥 Scarica Video", f, "video.mp4", key="down_v")
+                if st.session_state.video_path and os.path.exists(st.session_state.video_path):
+                    with open(st.session_state.video_path, "rb") as f:
+                        st.download_button("📥 Scarica Video (qualità piena)", f, "video.mp4", key="down_v")
             with c_d2:
                 st.download_button("📝 Scarica Report", st.session_state.report_data, "report.txt", key="down_t")
 

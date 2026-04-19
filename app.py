@@ -154,6 +154,8 @@ def main():
     with st.sidebar:
         st.header("Sorgenti")
         files = [st.file_uploader(f"Video {i+1}", type=["mp4","mov"]) for i in range(4)]
+        st.divider()
+        audio_file = st.file_uploader("Audio (mp3/wav)", type=["mp3","wav"])
 
     c1, c2, c3 = st.columns(3)
     weights = {}
@@ -192,17 +194,14 @@ def main():
         # AUDIO SYNC — toggle + uploader + scelta traccia
         beat_sync = st.toggle("A tempo di musica", value=False,
             help="Carica un audio: i tagli seguiranno i beat e le strisce seguiranno il volume.")
-        audio_file = None
         use_custom_audio = False
-        if beat_sync:
-            audio_file = st.file_uploader("Audio (mp3/wav)", type=["mp3","wav"])
-            if audio_file:
-                audio_choice = st.radio(
-                    "Traccia audio nel video finale",
-                    ["Audio originale dei video", "Usa la musica caricata"],
-                    index=0
-                )
-                use_custom_audio = (audio_choice == "Usa la musica caricata")
+        if beat_sync and audio_file:
+            audio_choice = st.radio(
+                "Traccia audio nel video finale",
+                ["Audio originale dei video", "Usa la musica caricata"],
+                index=0
+            )
+            use_custom_audio = (audio_choice == "Usa la musica caricata")
 
         st.markdown("---")
 

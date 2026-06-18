@@ -18,7 +18,13 @@ else:
 # --- ANALISI AUDIO ---
 def analyze_audio(audio_file, duration):
     """Ritorna beat_times (list) e rms_envelope (list normalizzato 0-1)."""
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as t:
+    # Preserva l'estensione originale del file (mp3/wav) invece di forzare .mp3
+    orig_name = getattr(audio_file, "name", "") or ""
+    suffix = os.path.splitext(orig_name)[1].lower()
+    if suffix not in (".mp3", ".wav"):
+        suffix = ".mp3"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as t:
         t.write(audio_file.read())
         tmp_path = t.name
     try:
@@ -91,14 +97,29 @@ class VideoEngine:
         for i, p in paths.items():
             self.video_clips[i] = VideoFileClip(p)
         self.stats["sources"] = len(self.video_clips)
-        return self.video_clips[next(iter(self.video_clips))].size
+        first_key = next(iter(self.video_clips))
+        return self.video_clips[first_key].size
+
+    def close_sources(self):
+        """Chiude tutti i VideoFileClip sorgente per liberare handle/processi ffmpeg."""
+        for clip in self.video_clips.values():
+            try:
+                clip.close()
+            except Exception:
+                pass
+        self.video_clips = {}
 
     def generate(self, weights, r_a, r_b, r_rand, duration, fps,
                  s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
                  beat_times=None, rms_envelope=None):
         curr_t = 0
         clips = []
-        target_size = self.video_clips[next(iter(self.video_clips))].size
+        # FIX: usare le chiavi reali dei video caricati, non range(len(...)).
+        # Se l'utente carica ad es. solo Video 1 e Video 3, le chiavi sono {0, 2}
+        # e non {0, 1}: iterare su range(len(video_clips)) causava un KeyError
+        # su weights[1], inesistente.
+        keys = list(self.video_clips.keys())
+        target_size = self.video_clips[keys[0]].size
         self.stats["fragments"] = 0
         beat_idx = 0  # indice corrente nella lista beat_times
 
@@ -112,17 +133,19 @@ class VideoEngine:
                 if beat_idx < len(beat_times):
                     seg_dur = max(r_a, beat_times[beat_idx] - curr_t)
                 else:
-                    seg_dur = r_a
+                    # Beat terminati prima della fine del video: fallback
+                    # sul ritmo manuale (random o lineare) per il resto della durata.
+                    seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b)) if r_rand else r_a
             elif r_rand:
                 seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b))
             else:
                 seg_dur = r_a + (r_b - r_a) * progress
 
-            w_list = [weights[i][0] + (weights[i][1] - weights[i][0]) * progress
-                      for i in range(len(self.video_clips))]
+            w_list = [weights[k][0] + (weights[k][1] - weights[k][0]) * progress
+                      for k in keys]
             if sum(w_list) == 0: w_list = [1] * len(w_list)
 
-            v_idx = random.choices(list(self.video_clips.keys()), weights=w_list, k=1)[0]
+            v_idx = random.choices(keys, weights=w_list, k=1)[0]
             source = self.video_clips[v_idx]
 
             start_p = random.uniform(0, max(0, source.duration - seg_dur))
@@ -220,6 +243,8 @@ def main():
             beat_times    = None
             rms_envelope  = None
             beat_count    = 0
+            engine        = None
+            tmp_audio_path = None
 
             try:
                 # Analisi audio — una tantum prima del rendering
@@ -244,7 +269,8 @@ def main():
                     tmp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
                     tmp_audio.write(audio_file.read())
                     tmp_audio.close()
-                    audio_clip = AudioFileClip(tmp_audio.name)
+                    tmp_audio_path = tmp_audio.name
+                    audio_clip = AudioFileClip(tmp_audio_path)
                     if audio_clip.duration < durata:
                         audio_clip = audio_loop(audio_clip, duration=durata)
                     else:
@@ -295,6 +321,24 @@ def main():
 
             except Exception as e:
                 st.error(f"Errore: {e}")
+
+            finally:
+                # Pulizia risorse: chiude i VideoFileClip sorgente e rimuove
+                # i file temporanei creati per questo render (sorgenti caricate
+                # e audio custom). video.mp4/preview.mp4 NON vengono toccati:
+                # restano su disco perche' servono ai download_button successivi.
+                if engine is not None:
+                    engine.close_sources()
+                for p in paths.values():
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+                if tmp_audio_path:
+                    try:
+                        os.remove(tmp_audio_path)
+                    except OSError:
+                        pass
 
         # RISULTATI
         if st.session_state.video_ready:

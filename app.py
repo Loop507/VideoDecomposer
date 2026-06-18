@@ -289,6 +289,10 @@ def main():
         files = [st.file_uploader(f"Video {i+1}", type=["mp4","mov"]) for i in range(4)]
         st.divider()
         audio_file = st.file_uploader("Audio (mp3/wav)", type=["mp3","wav"])
+        st.divider()
+        st.subheader("Modalità Mix")
+        mix_mode = st.radio("", ["Random", "Quote Fisse"], horizontal=True)
+        st.caption("**Random** = probabilità per frammento  |  **Quote Fisse** = secondi garantiti per sorgente")
 
     c1, c2, c3 = st.columns(3)
     weights  = {}
@@ -296,12 +300,7 @@ def main():
 
     with c1:
         st.subheader("Mix Video")
-        loaded    = [i for i in range(4) if files[i]]
-        mix_mode  = st.radio("Modalità Mix", ["Random", "Quote Fisse"],
-                             horizontal=True, label_visibility="collapsed")
-        st.caption("**Random** = probabilità per frammento  |  **Quote Fisse** = secondi garantiti per sorgente")
-        st.markdown("---")
-
+        loaded = [i for i in range(4) if files[i]]
         default_quota = round(100 / len(loaded)) if loaded else 25
 
         for i in range(4):

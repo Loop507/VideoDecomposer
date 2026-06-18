@@ -190,7 +190,7 @@ class VideoEngine:
             ))
         return final
 
-
+    def generate(self, weights, r_a, r_b, r_rand, duration, fps,
                  s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
                  beat_times=None, rms_envelope=None):
         curr_t = 0

@@ -123,6 +123,17 @@ class VideoEngine:
         self.stats["fragments"] = 0
         beat_idx = 0  # indice corrente nella lista beat_times
 
+        # --- ANTI-RIPETIZIONE TAGLI ---
+        # Il random puro su start_p tende a ripescare zone vicine quando i video
+        # sorgente sono corti e i frammenti tanti (legge dei grandi numeri).
+        # Qui non eliminiamo il random: permettiamo che un taglio "torni" al
+        # massimo una volta in una finestra recente, ma se starebbe per ripetersi
+        # una terza volta lo rifiutiamo e ne peschiamo un altro.
+        recent_cuts = {k: [] for k in keys}   # start_p usati di recente, per sorgente
+        RECENT_WINDOW = 15                    # quanti tagli recenti tenere in memoria per sorgente
+        MAX_CLOSE_REPEATS = 2                 # quante volte un taglio "vicino" e' tollerato
+        MAX_RETRIES = 8                       # tentativi massimi prima di accettare comunque
+
         while curr_t < duration:
             progress = curr_t / duration
 
@@ -148,7 +159,25 @@ class VideoEngine:
             v_idx = random.choices(keys, weights=w_list, k=1)[0]
             source = self.video_clips[v_idx]
 
-            start_p = random.uniform(0, max(0, source.duration - seg_dur))
+            # Soglia di "vicinanza" tra due tagli: proporzionale alla durata
+            # del frammento corrente, con un minimo di 1s per non essere troppo
+            # permissivi su segmenti molto brevi.
+            proximity = max(1.0, seg_dur * 1.5)
+            max_start = max(0, source.duration - seg_dur)
+
+            start_p = random.uniform(0, max_start)
+            attempts = 0
+            while attempts < MAX_RETRIES:
+                close_count = sum(1 for s in recent_cuts[v_idx] if abs(s - start_p) < proximity)
+                if close_count < MAX_CLOSE_REPEATS:
+                    break
+                start_p = random.uniform(0, max_start)
+                attempts += 1
+
+            recent_cuts[v_idx].append(start_p)
+            if len(recent_cuts[v_idx]) > RECENT_WINDOW:
+                recent_cuts[v_idx].pop(0)
+
             clip = source.subclip(start_p, start_p + seg_dur).resize(newsize=target_size).set_fps(fps)
             clips.append(clip)
             curr_t += seg_dur

@@ -109,7 +109,88 @@ class VideoEngine:
                 pass
         self.video_clips = {}
 
-    def generate(self, weights, r_a, r_b, r_rand, duration, fps,
+    def generate_fixed_quota(self, quotas, r_a, r_b, r_rand, duration, fps,
+                              s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
+                              beat_times=None, rms_envelope=None):
+        """Modalita' Quote Fisse: ogni sorgente contribuisce esattamente la sua
+        percentuale di secondi. I tagli dentro ogni sorgente restano completamente
+        random (con filtro anti-ripetizione). I frammenti vengono poi mischiati
+        prima di concatenare, cosi' non appaiono tutti in blocco per sorgente."""
+
+        keys = list(self.video_clips.keys())
+        target_size = self.video_clips[keys[0]].size
+        self.stats["fragments"] = 0
+
+        # Normalizza le quote in modo che sommino a 1.0
+        total_q = sum(quotas.get(k, 0) for k in keys)
+        if total_q == 0:
+            norm = {k: 1 / len(keys) for k in keys}
+        else:
+            norm = {k: quotas.get(k, 0) / total_q for k in keys}
+
+        # Calcola i secondi assegnati a ciascuna sorgente
+        time_budget = {k: norm[k] * duration for k in keys}
+
+        recent_cuts  = {k: [] for k in keys}
+        RECENT_WINDOW    = 15
+        MAX_CLOSE_REPEATS = 2
+        MAX_RETRIES      = 8
+
+        all_clips = []
+
+        for k in keys:
+            budget   = time_budget[k]
+            source   = self.video_clips[k]
+            spent    = 0.0
+            progress = 0.0
+
+            while spent < budget:
+                remaining = budget - spent
+                if r_rand:
+                    seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b))
+                else:
+                    seg_dur = r_a + (r_b - r_a) * progress
+
+                seg_dur = min(seg_dur, remaining)  # non sforare il budget
+                if seg_dur < 0.05:
+                    break
+
+                proximity = max(1.0, seg_dur * 1.5)
+                max_start = max(0, source.duration - seg_dur)
+
+                start_p  = random.uniform(0, max_start)
+                attempts = 0
+                while attempts < MAX_RETRIES:
+                    close_count = sum(1 for s in recent_cuts[k] if abs(s - start_p) < proximity)
+                    if close_count < MAX_CLOSE_REPEATS:
+                        break
+                    start_p  = random.uniform(0, max_start)
+                    attempts += 1
+
+                recent_cuts[k].append(start_p)
+                if len(recent_cuts[k]) > RECENT_WINDOW:
+                    recent_cuts[k].pop(0)
+
+                clip = source.subclip(start_p, start_p + seg_dur).resize(newsize=target_size).set_fps(fps)
+                all_clips.append(clip)
+                spent   += seg_dur
+                progress = spent / budget
+                self.stats["fragments"] += 1
+                p_bar.progress(min(self.stats["fragments"] / max(1, int(duration / r_a)) * 0.4, 0.4),
+                               text=f"Composizione: {self.stats['fragments']} pezzi")
+
+        # Mescola i frammenti cosi' non appaiono in blocchi monolitici per sorgente
+        random.shuffle(all_clips)
+
+        final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
+        if use_scan:
+            _rms = rms_envelope
+            final = final.fl(lambda gf, t: apply_procedural_slit_scan(
+                gf, t, final.duration, s_a, s_b, s_rand, scan_dir, _rms
+            ))
+        return final
+
+
                  s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
                  beat_times=None, rms_envelope=None):
         curr_t = 0
@@ -210,17 +291,30 @@ def main():
         audio_file = st.file_uploader("Audio (mp3/wav)", type=["mp3","wav"])
 
     c1, c2, c3 = st.columns(3)
-    weights = {}
+    weights  = {}
+    quotas   = {}
 
     with c1:
         st.subheader("Mix Video")
+        loaded    = [i for i in range(4) if files[i]]
+        mix_mode  = st.radio("Modalità Mix", ["Random", "Quote Fisse"],
+                             horizontal=True, label_visibility="collapsed")
+        st.caption("**Random** = probabilità per frammento  |  **Quote Fisse** = secondi garantiti per sorgente")
+        st.markdown("---")
+
+        default_quota = round(100 / len(loaded)) if loaded else 25
+
         for i in range(4):
             if files[i]:
                 st.write(f"**V{i+1}: {files[i].name[:12]}**")
-                s, e = st.columns(2)
-                ws = s.slider("Start %", 0, 100, 100 if i==0 else 0, key=f"ws{i}")
-                we = e.slider("End %",   0, 100, 0 if i==0 else 100, key=f"we{i}")
-                weights[i] = (ws, we)
+                if mix_mode == "Random":
+                    s, e = st.columns(2)
+                    ws = s.slider("Start %", 0, 100, 100 if i==0 else 0, key=f"ws{i}")
+                    we = e.slider("End %",   0, 100, 0 if i==0 else 100, key=f"we{i}")
+                    weights[i] = (ws, we)
+                else:
+                    q = st.slider("Quota %", 0, 100, default_quota, key=f"wq{i}")
+                    quotas[i] = q
 
     with c2:
         st.subheader("Ritmo e Strisce")
@@ -284,11 +378,19 @@ def main():
 
                 engine = VideoEngine()
                 engine.load_sources(paths)
-                final = engine.generate(
-                    weights, r_a, r_b, r_rand, durata, fps,
-                    s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                    beat_times=beat_times, rms_envelope=rms_envelope
-                )
+
+                if mix_mode == "Quote Fisse":
+                    final = engine.generate_fixed_quota(
+                        quotas, r_a, r_b, r_rand, durata, fps,
+                        s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
+                        beat_times=beat_times, rms_envelope=rms_envelope
+                    )
+                else:
+                    final = engine.generate(
+                        weights, r_a, r_b, r_rand, durata, fps,
+                        s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
+                        beat_times=beat_times, rms_envelope=rms_envelope
+                    )
 
                 # Sostituisce traccia audio se richiesto
                 if beat_sync and audio_file and use_custom_audio:
@@ -324,17 +426,26 @@ def main():
                 time.sleep(0.5)
                 p_bar.progress(1.0, text="Pronto!")
 
+                # Descrizione mix per il report
+                if mix_mode == "Quote Fisse":
+                    mix_log = "Quote Fisse — " + " / ".join(
+                        f"V{k+1}:{quotas.get(k,0)}%" for k in paths.keys()
+                    )
+                else:
+                    mix_log = "Random (pesi Start%/End%)"
+
                 st.session_state.video_path   = out_v
                 st.session_state.preview_path = prev_v
                 st.session_state.report_data  = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
-:: MOTORE: video_decomposed [01.02]
+:: MOTORE: video_decomposed [01.03]
 :: AUDIO: 48 kHz / Float a 32 bit / Punto di Clipping
 :: PROCESSO: Collasso Ricorsivo
 
 > TECHNICAL LOG SHEET:
 * Sorgenti Video: {engine.stats['sources']}
 * Frammenti Generati: {engine.stats['fragments']}
+* Mix: {mix_log}
 * Ritmo: {r_a}s >> {r_b}s (Random: {r_rand})
 * Strisce: {s_a}px >> {s_b}px (Random: {s_rand})
 * Geometria: {scan_dir}

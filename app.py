@@ -348,7 +348,7 @@ def main():
     st.title("VideoDecomposer: Rendering & Report")
 
     for key, val in [('video_ready', False), ('report_data', ''),
-                     ('video_path', ''), ('preview_path', '')]:
+                     ('video_path', ''), ('preview_path', ''), ('render_name', 'loop507_render')]:
         if key not in st.session_state:
             st.session_state[key] = val
 
@@ -414,13 +414,32 @@ def main():
         else:
             st.subheader("Parametri Remix DJ")
             slice_options = [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
-            slice_dur = st.select_slider(
-                "Durata slice",
-                options=slice_options,
-                value=0.25,
-                format_func=lambda x: f"{x}s",
-                help="0.1s = stutter ultra-rapido, 2.0s = loop lungo stile CDJ"
+
+            # Toggle PRIMA dello slider: se attivo, la durata slice viene dal beat
+            beat_slice_mode = st.toggle(
+                "Slice automatico da beat",
+                value=False,
+                disabled=(audio_file is None),
+                help="Usa i beat della musica caricata come punti di taglio. "
+                     "Richiede audio caricato nella sidebar."
             )
+            if audio_file is None:
+                st.caption("_Carica un audio nella sidebar per attivare lo slice automatico._")
+
+            # Slider durata visibile solo in modalita' manuale
+            if not beat_slice_mode:
+                slice_dur = st.select_slider(
+                    "Durata slice",
+                    options=slice_options,
+                    value=0.25,
+                    format_func=lambda x: f"{x}s",
+                    help="0.1s = stutter ultra-rapido, 2.0s = loop lungo stile CDJ"
+                )
+            else:
+                slice_dur = 0.25  # valore di fallback, non usato
+                st.caption("_Durata slice determinata dai beat dell'audio._")
+
+            st.markdown("---")
             loop_reps = st.slider(
                 "Ripetizioni loop (stutter)", min_value=1, max_value=8, value=2,
                 help="Quante volte uno slice viene ripetuto. 1 = nessun loop."
@@ -433,17 +452,6 @@ def main():
                 "Pitch Glitch (speed warp)", value=False,
                 help="Alcuni slice vengono accelerati o rallentati casualmente (x0.5 / x2.0)."
             )
-            st.markdown("---")
-            beat_slice_mode = st.toggle(
-                "Slice automatico da beat",
-                value=False,
-                disabled=(audio_file is None),
-                help="Usa i beat della musica caricata come punti di taglio. "
-                     "La durata dello slice diventa l'intervallo tra beat consecutivi. "
-                     "Richiede audio caricato nella sidebar."
-            )
-            if beat_slice_mode and audio_file is None:
-                st.caption("_Carica un audio nella sidebar per attivare._")
             # default per variabili Decompose non usate in Remix DJ
             r_rand = False; r_a = 0.2; r_b = 1.0
             use_scan = False; s_rand = False; s_a = 10; s_b = 80; scan_dir = "Orizzontale"
@@ -580,9 +588,16 @@ def main():
                 time.sleep(0.5)
                 p_bar.progress(1.0, text="Pronto!")
 
+                # Nome condiviso video + report (stesso codice)
+                render_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                mode_short = "DJ" if app_mode == "Remix DJ" else "DC"
+                render_name = f"loop507_{mode_short}_{render_id}"
+
                 st.session_state.video_path   = out_v
                 st.session_state.preview_path = prev_v
+                st.session_state.render_name  = render_name
                 st.session_state.report_data  = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
+:: FILE: {render_name}
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
 :: MOTORE: video_decomposed [05.03]
 :: AUDIO: 48 kHz / Float a 32 bit / Punto di Clipping
@@ -594,6 +609,7 @@ def main():
 * Modalita': {mix_log}
 {extra_log}
 {'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
+{'* Slice Automatico: ON — ' + str(beat_count) + ' beat rilevati' if app_mode == 'Remix DJ' and beat_slice_mode and beat_times else ''}
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
 
@@ -630,10 +646,10 @@ def main():
                 if st.session_state.video_path and os.path.exists(st.session_state.video_path):
                     with open(st.session_state.video_path, "rb") as f:
                         st.download_button("Scarica Video (qualita' piena)", f,
-                                           "video.mp4", key="down_v")
+                                           f"{st.session_state.render_name}.mp4", key="down_v")
             with c_d2:
                 st.download_button("Scarica Report", st.session_state.report_data,
-                                   "report.txt", key="down_t")
+                                   f"{st.session_state.render_name}_report.txt", key="down_t")
 
 if __name__ == "__main__":
     main()

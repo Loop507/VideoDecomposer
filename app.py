@@ -17,13 +17,10 @@ else:
 
 # --- ANALISI AUDIO ---
 def analyze_audio(audio_file, duration):
-    """Ritorna beat_times (list) e rms_envelope (list normalizzato 0-1)."""
-    # Preserva l'estensione originale del file (mp3/wav) invece di forzare .mp3
     orig_name = getattr(audio_file, "name", "") or ""
     suffix = os.path.splitext(orig_name)[1].lower()
     if suffix not in (".mp3", ".wav"):
         suffix = ".mp3"
-
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as t:
         t.write(audio_file.read())
         tmp_path = t.name
@@ -42,31 +39,25 @@ def analyze_audio(audio_file, duration):
         os.remove(tmp_path)
     return beat_times, rms_envelope
 
-# --- MOTORE PROCEDURALE ---
+# --- MOTORE PROCEDURALE (slit scan) ---
 def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, scan_mode,
                                 rms_envelope=None):
     frame = get_frame(t).copy()
     h, w, _ = frame.shape
     progress = t / duration
-
     if is_random:
         current_strand = random.uniform(min(val_a, val_b), max(val_a, val_b))
     else:
         current_strand = val_a + (val_b - val_a) * progress
-
     current_strand = max(1, current_strand)
     magnet_prob = 0 if progress < 0.7 else ((progress - 0.7) / 0.3) ** 2
-
-    # Intensita' strisce modulata da RMS se disponibile
     if rms_envelope is not None:
         idx = min(int(t / 0.05), len(rms_envelope) - 1)
-        intensity = 0.2 + rms_envelope[idx] * 0.8  # range 0.2-1.0
+        intensity = 0.2 + rms_envelope[idx] * 0.8
     else:
         intensity = 1.0
-
     c_mode = scan_mode
     if scan_mode == "Mix": c_mode = random.choice(["Orizzontale", "Verticale"])
-
     if c_mode == "Orizzontale":
         current_y = 0
         while current_y < h:
@@ -87,7 +78,113 @@ def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, 
             current_x = next_x
     return frame
 
-# --- LOGICA DI MONTAGGIO ---
+# ---------------------------------------------------------------------------
+# REMIX DJ — genera sequenza slice/loop in stile CDJ
+# ---------------------------------------------------------------------------
+def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
+                      stutter_prob, pitch_glitch, p_bar,
+                      beat_slice_mode=False, beat_times=None):
+    """
+    Remix DJ:
+    - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
+    - loop_reps       : quante volte ogni slice viene loopata in modalita' stutter
+    - stutter_prob    : probabilita' [0-1] che uno slice sia stutterato
+    - pitch_glitch    : se True, alcuni slice vengono speed-warpati
+    - beat_slice_mode : se True, usa i beat come punti di taglio invece di slice_dur fisso
+    - beat_times      : lista di timestamp beat (da analyze_audio)
+
+    Anti-ripetizione v3: sistema bucket — distribuisce i tagli uniformemente
+    nelle zone del sorgente, funziona bene sia su clip corti che su lunghi (50s+).
+    """
+    keys = list(video_clips.keys())
+    target_size = video_clips[keys[0]].size
+    all_clips = []
+    total_fragments = 0
+    curr_t = 0.0
+
+    # Bucket anti-ripetizione per Remix DJ (stesso sistema del VideoEngine)
+    recent_cuts = {}
+
+    def pick_start_dj(source, k, seg):
+        max_start = max(0.0, source.duration - seg)
+        if max_start < 0.01:
+            return 0.0
+        n_buckets = max(8, int(source.duration / max(0.5, seg)))
+        n_buckets = min(n_buckets, 40)
+        bucket_key = f"_b_{k}"
+        if bucket_key not in recent_cuts or len(recent_cuts[bucket_key]) != n_buckets:
+            recent_cuts[bucket_key] = [0] * n_buckets
+        counts = recent_cuts[bucket_key]
+        bucket_size = max_start / n_buckets
+        min_v = min(counts)
+        # Rotazione esatta: solo i bucket con il minimo assoluto di visite
+        candidates = [i for i, c in enumerate(counts) if c == min_v]
+        chosen = random.choice(candidates)
+        s = random.uniform(chosen * bucket_size, min(chosen * bucket_size + bucket_size, max_start))
+        counts[chosen] += 1
+        return s
+
+    # Costruisce la lista di durate slice: beat-driven o fissa
+    if beat_slice_mode and beat_times and len(beat_times) > 1:
+        # Durate slice = intervalli tra beat consecutivi, ciclati per coprire 'duration'
+        beat_intervals = [beat_times[i+1] - beat_times[i] for i in range(len(beat_times)-1)]
+        # Filtra intervalli anomali (< 0.05s o > 4s)
+        beat_intervals = [d for d in beat_intervals if 0.05 <= d <= 4.0]
+        if not beat_intervals:
+            beat_intervals = [slice_dur]
+        slice_schedule = []
+        t = 0.0
+        bi = 0
+        while t < duration:
+            d = beat_intervals[bi % len(beat_intervals)]
+            slice_schedule.append(min(d, duration - t))
+            t += d
+            bi += 1
+    else:
+        # Slice fissa: costruisce lista uniforme
+        n = max(1, int(duration / slice_dur)) + 2
+        slice_schedule = [slice_dur] * n
+
+    estimated = max(1, len(slice_schedule))
+    sched_idx = 0
+
+    while curr_t < duration and sched_idx < len(slice_schedule):
+        seg = slice_schedule[sched_idx]
+        seg = min(seg, duration - curr_t)
+        sched_idx += 1
+        if seg < 0.04:
+            break
+
+        k = random.choice(keys)
+        source = video_clips[k]
+        start_p = pick_start_dj(source, k, seg)
+        base_clip = source.subclip(start_p, start_p + seg).resize(newsize=target_size).set_fps(fps)
+
+        if pitch_glitch and random.random() < 0.15:
+            factor = random.choice([0.5, 0.75, 1.5, 2.0])
+            base_clip = base_clip.speedx(factor).set_duration(seg)
+
+        if random.random() < stutter_prob and loop_reps > 1:
+            combo = concatenate_videoclips([base_clip] * loop_reps, method="chain")
+            combo = combo.set_duration(seg * loop_reps)
+            all_clips.append(combo)
+            curr_t += seg * loop_reps
+        else:
+            all_clips.append(base_clip)
+            curr_t += seg
+
+        total_fragments += 1
+        p_bar.progress(
+            min(total_fragments / estimated * 0.5, 0.5),
+            text=f"Remix DJ: {total_fragments} slice"
+        )
+
+    final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
+    return final, total_fragments
+
+# ---------------------------------------------------------------------------
+# VIDEO ENGINE — Decompose classico
+# ---------------------------------------------------------------------------
 class VideoEngine:
     def __init__(self):
         self.video_clips = {}
@@ -101,7 +198,6 @@ class VideoEngine:
         return self.video_clips[first_key].size
 
     def close_sources(self):
-        """Chiude tutti i VideoFileClip sorgente per liberare handle/processi ffmpeg."""
         for clip in self.video_clips.values():
             try:
                 clip.close()
@@ -109,85 +205,93 @@ class VideoEngine:
                 pass
         self.video_clips = {}
 
+    def _pick_start(self, source, k, seg_dur, recent_cuts):
+        """
+        Anti-ripetizione v3: sistema a bucket.
+        Divide il sorgente in N zone e tiene un contatore di visite per ognuna.
+        Al momento di tagliare, sceglie preferibilmente le zone meno visitate,
+        poi pesca un punto casuale DENTRO quella zona.
+        Funziona bene sia su clip corti (5s) che su clip lunghi (50s+).
+        """
+        max_start = max(0.0, source.duration - seg_dur)
+        if max_start < 0.01:
+            return 0.0
+
+        # Numero di bucket: piu' il video e' lungo, piu' bucket usiamo
+        n_buckets = max(8, int(source.duration / max(0.5, seg_dur)))
+        n_buckets = min(n_buckets, 40)  # cap per non sprecare memoria
+
+        # Inizializza contatori bucket se non esistono ancora
+        bucket_key = f"_buckets_{k}"
+        if bucket_key not in recent_cuts:
+            recent_cuts[bucket_key] = [0] * n_buckets
+
+        counts = recent_cuts[bucket_key]
+        # Se il numero di bucket e' cambiato (cambio parametri), reinizializza
+        if len(counts) != n_buckets:
+            recent_cuts[bucket_key] = [0] * n_buckets
+            counts = recent_cuts[bucket_key]
+
+        bucket_size = max_start / n_buckets
+
+        # Scegli il bucket meno visitato (con un po' di randomness per non essere deterministici)
+        min_visits = min(counts)
+        # Rotazione esatta: solo i bucket con il minimo assoluto di visite
+        candidates = [i for i, c in enumerate(counts) if c == min_visits]
+        chosen_bucket = random.choice(candidates)
+
+        # Punto casuale dentro il bucket scelto
+        b_start = chosen_bucket * bucket_size
+        b_end   = min(b_start + bucket_size, max_start)
+        s = random.uniform(b_start, b_end)
+
+        counts[chosen_bucket] += 1
+        return s
+
     def generate_fixed_quota(self, quotas, r_a, r_b, r_rand, duration, fps,
                               s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
                               beat_times=None, rms_envelope=None):
-        """Modalita' Quote Fisse: ogni sorgente contribuisce esattamente la sua
-        percentuale di secondi. I tagli dentro ogni sorgente restano completamente
-        random (con filtro anti-ripetizione). I frammenti vengono poi mischiati
-        prima di concatenare, cosi' non appaiono tutti in blocco per sorgente."""
-
         keys = list(self.video_clips.keys())
         target_size = self.video_clips[keys[0]].size
         self.stats["fragments"] = 0
-
-        # Normalizza le quote in modo che sommino a 1.0
         total_q = sum(quotas.get(k, 0) for k in keys)
         if total_q == 0:
             norm = {k: 1 / len(keys) for k in keys}
         else:
             norm = {k: quotas.get(k, 0) / total_q for k in keys}
-
-        # Calcola i secondi assegnati a ciascuna sorgente
         time_budget = {k: norm[k] * duration for k in keys}
-
-        recent_cuts  = {k: [] for k in keys}
-        RECENT_WINDOW    = 15
-        MAX_CLOSE_REPEATS = 2
-        MAX_RETRIES      = 8
-
+        recent_cuts = {k: [] for k in keys}
         all_clips = []
 
         for k in keys:
-            budget   = time_budget[k]
-            source   = self.video_clips[k]
-            spent    = 0.0
+            budget = time_budget[k]
+            source = self.video_clips[k]
+            spent = 0.0
             progress = 0.0
-
             while spent < budget:
                 remaining = budget - spent
                 if r_rand:
                     seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b))
                 else:
                     seg_dur = r_a + (r_b - r_a) * progress
-
-                seg_dur = min(seg_dur, remaining)  # non sforare il budget
+                seg_dur = min(seg_dur, remaining)
                 if seg_dur < 0.05:
                     break
-
-                proximity = max(1.0, seg_dur * 1.5)
-                max_start = max(0, source.duration - seg_dur)
-
-                start_p  = random.uniform(0, max_start)
-                attempts = 0
-                while attempts < MAX_RETRIES:
-                    close_count = sum(1 for s in recent_cuts[k] if abs(s - start_p) < proximity)
-                    if close_count < MAX_CLOSE_REPEATS:
-                        break
-                    start_p  = random.uniform(0, max_start)
-                    attempts += 1
-
-                recent_cuts[k].append(start_p)
-                if len(recent_cuts[k]) > RECENT_WINDOW:
-                    recent_cuts[k].pop(0)
-
+                start_p = self._pick_start(source, k, seg_dur, recent_cuts)
                 clip = source.subclip(start_p, start_p + seg_dur).resize(newsize=target_size).set_fps(fps)
                 all_clips.append(clip)
-                spent   += seg_dur
+                spent += seg_dur
                 progress = spent / budget
                 self.stats["fragments"] += 1
                 p_bar.progress(min(self.stats["fragments"] / max(1, int(duration / r_a)) * 0.4, 0.4),
                                text=f"Composizione: {self.stats['fragments']} pezzi")
 
-        # Mescola i frammenti cosi' non appaiono in blocchi monolitici per sorgente
         random.shuffle(all_clips)
-
         final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
         if use_scan:
             _rms = rms_envelope
             final = final.fl(lambda gf, t: apply_procedural_slit_scan(
-                gf, t, final.duration, s_a, s_b, s_rand, scan_dir, _rms
-            ))
+                gf, t, final.duration, s_a, s_b, s_rand, scan_dir, _rms))
         return final
 
     def generate(self, weights, r_a, r_b, r_rand, duration, fps,
@@ -195,70 +299,32 @@ class VideoEngine:
                  beat_times=None, rms_envelope=None):
         curr_t = 0
         clips = []
-        # FIX: usare le chiavi reali dei video caricati, non range(len(...)).
-        # Se l'utente carica ad es. solo Video 1 e Video 3, le chiavi sono {0, 2}
-        # e non {0, 1}: iterare su range(len(video_clips)) causava un KeyError
-        # su weights[1], inesistente.
         keys = list(self.video_clips.keys())
         target_size = self.video_clips[keys[0]].size
         self.stats["fragments"] = 0
-        beat_idx = 0  # indice corrente nella lista beat_times
-
-        # --- ANTI-RIPETIZIONE TAGLI ---
-        # Il random puro su start_p tende a ripescare zone vicine quando i video
-        # sorgente sono corti e i frammenti tanti (legge dei grandi numeri).
-        # Qui non eliminiamo il random: permettiamo che un taglio "torni" al
-        # massimo una volta in una finestra recente, ma se starebbe per ripetersi
-        # una terza volta lo rifiutiamo e ne peschiamo un altro.
-        recent_cuts = {k: [] for k in keys}   # start_p usati di recente, per sorgente
-        RECENT_WINDOW = 15                    # quanti tagli recenti tenere in memoria per sorgente
-        MAX_CLOSE_REPEATS = 2                 # quante volte un taglio "vicino" e' tollerato
-        MAX_RETRIES = 8                       # tentativi massimi prima di accettare comunque
+        beat_idx = 0
+        recent_cuts = {k: [] for k in keys}
 
         while curr_t < duration:
             progress = curr_t / duration
-
             if beat_times and len(beat_times) > 0:
-                # Taglio sul prossimo beat disponibile
                 while beat_idx < len(beat_times) and beat_times[beat_idx] <= curr_t:
                     beat_idx += 1
                 if beat_idx < len(beat_times):
                     seg_dur = max(r_a, beat_times[beat_idx] - curr_t)
                 else:
-                    # Beat terminati prima della fine del video: fallback
-                    # sul ritmo manuale (random o lineare) per il resto della durata.
                     seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b)) if r_rand else r_a
             elif r_rand:
                 seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b))
             else:
                 seg_dur = r_a + (r_b - r_a) * progress
 
-            w_list = [weights[k][0] + (weights[k][1] - weights[k][0]) * progress
-                      for k in keys]
+            w_list = [weights[k][0] + (weights[k][1] - weights[k][0]) * progress for k in keys]
             if sum(w_list) == 0: w_list = [1] * len(w_list)
-
             v_idx = random.choices(keys, weights=w_list, k=1)[0]
             source = self.video_clips[v_idx]
 
-            # Soglia di "vicinanza" tra due tagli: proporzionale alla durata
-            # del frammento corrente, con un minimo di 1s per non essere troppo
-            # permissivi su segmenti molto brevi.
-            proximity = max(1.0, seg_dur * 1.5)
-            max_start = max(0, source.duration - seg_dur)
-
-            start_p = random.uniform(0, max_start)
-            attempts = 0
-            while attempts < MAX_RETRIES:
-                close_count = sum(1 for s in recent_cuts[v_idx] if abs(s - start_p) < proximity)
-                if close_count < MAX_CLOSE_REPEATS:
-                    break
-                start_p = random.uniform(0, max_start)
-                attempts += 1
-
-            recent_cuts[v_idx].append(start_p)
-            if len(recent_cuts[v_idx]) > RECENT_WINDOW:
-                recent_cuts[v_idx].pop(0)
-
+            start_p = self._pick_start(source, v_idx, seg_dur, recent_cuts)
             clip = source.subclip(start_p, start_p + seg_dur).resize(newsize=target_size).set_fps(fps)
             clips.append(clip)
             curr_t += seg_dur
@@ -268,21 +334,23 @@ class VideoEngine:
 
         final = concatenate_videoclips(clips, method="chain").set_duration(duration)
         if use_scan:
-            _rms = rms_envelope  # closure
+            _rms = rms_envelope
             final = final.fl(lambda gf, t: apply_procedural_slit_scan(
-                gf, t, final.duration, s_a, s_b, s_rand, scan_dir, _rms
-            ))
+                gf, t, final.duration, s_a, s_b, s_rand, scan_dir, _rms))
         return final
 
-# --- INTERFACCIA ---
+
+# ---------------------------------------------------------------------------
+# INTERFACCIA
+# ---------------------------------------------------------------------------
 def main():
     st.set_page_config(page_title="VideoDecomposer PRO", layout="wide")
     st.title("VideoDecomposer: Rendering & Report")
 
-    if 'video_ready'   not in st.session_state: st.session_state.video_ready   = False
-    if 'report_data'   not in st.session_state: st.session_state.report_data   = ""
-    if 'video_path'    not in st.session_state: st.session_state.video_path    = ""
-    if 'preview_path'  not in st.session_state: st.session_state.preview_path  = ""
+    for key, val in [('video_ready', False), ('report_data', ''),
+                     ('video_path', ''), ('preview_path', '')]:
+        if key not in st.session_state:
+            st.session_state[key] = val
 
     with st.sidebar:
         st.header("Sorgenti")
@@ -290,63 +358,119 @@ def main():
         st.divider()
         audio_file = st.file_uploader("Audio (mp3/wav)", type=["mp3","wav"])
         st.divider()
-        st.subheader("Modalità Mix")
-        mix_mode = st.radio("", ["Random", "Quote Fisse"], horizontal=True)
-        st.caption("**Random** = probabilità per frammento  |  **Quote Fisse** = secondi garantiti per sorgente")
+        st.subheader("Modalita'")
+        app_mode = st.radio("", ["Decompose", "Remix DJ"], horizontal=True)
+        mix_mode = None
+        if app_mode == "Decompose":
+            st.subheader("Mix")
+            mix_mode = st.radio("", ["Random", "Quote Fisse"], horizontal=True)
+            st.caption("**Random** = probabilita' per frammento  |  **Quote Fisse** = secondi garantiti per sorgente")
 
     c1, c2, c3 = st.columns(3)
-    weights  = {}
-    quotas   = {}
+    weights = {}
+    quotas  = {}
 
     with c1:
-        st.subheader("Mix Video")
         loaded = [i for i in range(4) if files[i]]
         default_quota = round(100 / len(loaded)) if loaded else 25
 
-        for i in range(4):
-            if files[i]:
-                st.write(f"**V{i+1}: {files[i].name[:12]}**")
-                if mix_mode == "Random":
-                    s, e = st.columns(2)
-                    ws = s.slider("Start %", 0, 100, 100 if i==0 else 0, key=f"ws{i}")
-                    we = e.slider("End %",   0, 100, 0 if i==0 else 100, key=f"we{i}")
-                    weights[i] = (ws, we)
-                else:
-                    q = st.slider("Quota %", 0, 100, default_quota, key=f"wq{i}")
-                    quotas[i] = q
+        if app_mode == "Decompose":
+            st.subheader("Mix Video")
+            for i in range(4):
+                if files[i]:
+                    st.write(f"**V{i+1}: {files[i].name[:12]}**")
+                    if mix_mode == "Random":
+                        s, e = st.columns(2)
+                        ws = s.slider("Start %", 0, 100, 100 if i==0 else 0, key=f"ws{i}")
+                        we = e.slider("End %",   0, 100, 0 if i==0 else 100, key=f"we{i}")
+                        weights[i] = (ws, we)
+                    else:
+                        q = st.slider("Quota %", 0, 100, default_quota, key=f"wq{i}")
+                        quotas[i] = q
+        else:
+            st.subheader("Sorgenti caricate")
+            for i in range(4):
+                if files[i]:
+                    st.write(f"V{i+1}: {files[i].name[:18]}")
+            st.caption("Tutti i video vengono usati in egual misura nel remix.")
 
     with c2:
-        st.subheader("Ritmo e Strisce")
-        r_rand = st.toggle("Ritmo Random")
-        r_col1, r_col2 = st.columns(2)
-        r_a = r_col1.number_input("Inizio/Min (s)", 0.05, 5.0, 0.2)
-        r_b = r_col2.number_input("Fine/Max (s)",   0.05, 5.0, 1.0)
-
-        st.markdown("---")
-        use_scan = st.checkbox("ATTIVA STRISCE", value=True)
-        s_rand   = st.toggle("Spessore Random", disabled=not use_scan)
-        s_col1, s_col2 = st.columns(2)
-        s_a = s_col1.number_input("Inizio/Min (px)", 1, 300, 10, disabled=not use_scan)
-        s_b = s_col2.number_input("Fine/Max (px)",   1, 300, 80, disabled=not use_scan)
-        scan_dir = st.selectbox("Asse", ["Orizzontale", "Verticale", "Mix"], disabled=not use_scan)
+        if app_mode == "Decompose":
+            st.subheader("Ritmo e Strisce")
+            r_rand = st.toggle("Ritmo Random")
+            r_col1, r_col2 = st.columns(2)
+            r_a = r_col1.number_input("Inizio/Min (s)", 0.05, 5.0, 0.2)
+            r_b = r_col2.number_input("Fine/Max (s)",   0.05, 5.0, 1.0)
+            st.markdown("---")
+            use_scan = st.checkbox("ATTIVA STRISCE", value=True)
+            s_rand   = st.toggle("Spessore Random", disabled=not use_scan)
+            s_col1, s_col2 = st.columns(2)
+            s_a = s_col1.number_input("Inizio/Min (px)", 1, 300, 10, disabled=not use_scan)
+            s_b = s_col2.number_input("Fine/Max (px)",   1, 300, 80, disabled=not use_scan)
+            scan_dir = st.selectbox("Asse", ["Orizzontale", "Verticale", "Mix"], disabled=not use_scan)
+            # default per variabili DJ non usate in Decompose
+            slice_dur = 0.25; loop_reps = 2; stutter_prob = 0.4
+            pitch_glitch = False; beat_slice_mode = False
+        else:
+            st.subheader("Parametri Remix DJ")
+            slice_options = [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
+            slice_dur = st.select_slider(
+                "Durata slice",
+                options=slice_options,
+                value=0.25,
+                format_func=lambda x: f"{x}s",
+                help="0.1s = stutter ultra-rapido, 2.0s = loop lungo stile CDJ"
+            )
+            loop_reps = st.slider(
+                "Ripetizioni loop (stutter)", min_value=1, max_value=8, value=2,
+                help="Quante volte uno slice viene ripetuto. 1 = nessun loop."
+            )
+            stutter_prob = st.slider(
+                "Probabilita' stutter %", min_value=0, max_value=100, value=40,
+                help="Percentuale di slice che vengono stutterati."
+            ) / 100.0
+            pitch_glitch = st.checkbox(
+                "Pitch Glitch (speed warp)", value=False,
+                help="Alcuni slice vengono accelerati o rallentati casualmente (x0.5 / x2.0)."
+            )
+            st.markdown("---")
+            beat_slice_mode = st.toggle(
+                "Slice automatico da beat",
+                value=False,
+                disabled=(audio_file is None),
+                help="Usa i beat della musica caricata come punti di taglio. "
+                     "La durata dello slice diventa l'intervallo tra beat consecutivi. "
+                     "Richiede audio caricato nella sidebar."
+            )
+            if beat_slice_mode and audio_file is None:
+                st.caption("_Carica un audio nella sidebar per attivare._")
+            # default per variabili Decompose non usate in Remix DJ
+            r_rand = False; r_a = 0.2; r_b = 1.0
+            use_scan = False; s_rand = False; s_a = 10; s_b = 80; scan_dir = "Orizzontale"
 
     with c3:
         st.subheader("Esportazione")
         durata = st.number_input("Durata Totale (s)", 5, 300, 15)
         fps    = st.selectbox("FPS", [24, 30])
-
         st.markdown("---")
-        # AUDIO SYNC — toggle + uploader + scelta traccia
-        beat_sync = st.toggle("A tempo di musica", value=False,
-            help="Carica un audio: i tagli seguiranno i beat e le strisce seguiranno il volume.")
+
+        if app_mode == "Decompose":
+            beat_sync = st.toggle("A tempo di musica", value=False,
+                help="I tagli seguiranno i beat, le strisce seguiranno il volume.")
+        else:
+            beat_sync = False
+            st.caption("_Beat sync disponibile in modalita' Decompose._")
+
         use_custom_audio = False
-        if beat_sync and audio_file:
+        if app_mode == "Decompose" and beat_sync and audio_file:
             audio_choice = st.radio(
                 "Traccia audio nel video finale",
                 ["Audio originale dei video", "Usa la musica caricata"],
                 index=0
             )
             use_custom_audio = (audio_choice == "Usa la musica caricata")
+        elif app_mode == "Remix DJ" and audio_file:
+            use_custom_audio = st.checkbox("Aggiungi musica caricata al video", value=True)
 
         st.markdown("---")
 
@@ -367,32 +491,65 @@ def main():
             beat_count    = 0
             engine        = None
             tmp_audio_path = None
+            total_frags   = 0
 
             try:
-                # Analisi audio — una tantum prima del rendering
-                if beat_sync and audio_file:
+                # Analisi audio: Decompose beat sync OPPURE Remix DJ beat slice
+                if app_mode == "Decompose" and beat_sync and audio_file:
                     p_bar.progress(0.05, text="Analisi audio...")
                     beat_times, rms_envelope = analyze_audio(audio_file, durata)
                     beat_count = len(beat_times)
+                elif app_mode == "Remix DJ" and beat_slice_mode and audio_file:
+                    p_bar.progress(0.05, text="Analisi beat per slice...")
+                    audio_file.seek(0)
+                    beat_times, _ = analyze_audio(audio_file, durata)
+                    beat_count = len(beat_times)
+                    audio_file.seek(0)  # reset per eventuale uso audio custom dopo
 
                 engine = VideoEngine()
                 engine.load_sources(paths)
 
-                if mix_mode == "Quote Fisse":
-                    final = engine.generate_fixed_quota(
-                        quotas, r_a, r_b, r_rand, durata, fps,
-                        s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                        beat_times=beat_times, rms_envelope=rms_envelope
-                    )
+                if app_mode == "Decompose":
+                    if mix_mode == "Quote Fisse":
+                        final = engine.generate_fixed_quota(
+                            quotas, r_a, r_b, r_rand, durata, fps,
+                            s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
+                            beat_times=beat_times, rms_envelope=rms_envelope
+                        )
+                    else:
+                        final = engine.generate(
+                            weights, r_a, r_b, r_rand, durata, fps,
+                            s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
+                            beat_times=beat_times, rms_envelope=rms_envelope
+                        )
+                    total_frags = engine.stats["fragments"]
+                    mode_label = "Decompose"
+                    if mix_mode == "Quote Fisse":
+                        mix_log = "Quote Fisse — " + " / ".join(
+                            f"V{k+1}:{quotas.get(k,0)}%" for k in paths.keys())
+                    else:
+                        mix_log = "Random (pesi Start%/End%)"
+                    extra_log = (f"* Ritmo: {r_a}s >> {r_b}s (Random: {r_rand})\n"
+                                 f"* Strisce: {s_a}px >> {s_b}px (Random: {s_rand})\n"
+                                 f"* Geometria: {scan_dir}")
                 else:
-                    final = engine.generate(
-                        weights, r_a, r_b, r_rand, durata, fps,
-                        s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                        beat_times=beat_times, rms_envelope=rms_envelope
+                    final, total_frags = generate_dj_remix(
+                        engine.video_clips, durata, fps,
+                        slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
+                        beat_slice_mode=beat_slice_mode,
+                        beat_times=beat_times
                     )
+                    mode_label = "Remix DJ"
+                    slice_info = f"beat-driven ({beat_count} beat)" if beat_slice_mode and beat_times else f"{slice_dur}s fisso"
+                    mix_log = (f"Remix DJ — slice {slice_info} / "
+                               f"loop x{loop_reps} / stutter {int(stutter_prob*100)}%")
+                    extra_log = (f"* Slice Mode: {slice_info}\n"
+                                 f"* Loop Reps: {loop_reps}\n"
+                                 f"* Stutter Prob: {int(stutter_prob*100)}%\n"
+                                 f"* Pitch Glitch: {pitch_glitch}")
 
-                # Sostituisce traccia audio se richiesto
-                if beat_sync and audio_file and use_custom_audio:
+                # Audio custom
+                if use_custom_audio and audio_file:
                     from moviepy.editor import AudioFileClip
                     from moviepy.audio.fx.all import audio_loop
                     audio_file.seek(0)
@@ -407,14 +564,12 @@ def main():
                         audio_clip = audio_clip.set_duration(durata)
                     final = final.set_audio(audio_clip)
 
-                # Scrittura video finale
                 out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,9999)}.mp4")
                 p_bar.progress(0.75, text="Scrittura video...")
                 final.write_videofile(out_v, codec="libx264", audio_codec="aac",
                                       preset="ultrafast", logger=None)
                 time.sleep(1.5)
 
-                # Preview ridotta a 480p
                 p_bar.progress(0.90, text="Generando preview...")
                 prev_v = os.path.join(tempfile.gettempdir(), f"preview_{random.randint(0,9999)}.mp4")
                 prev_clip = final.resize(height=480)
@@ -425,29 +580,19 @@ def main():
                 time.sleep(0.5)
                 p_bar.progress(1.0, text="Pronto!")
 
-                # Descrizione mix per il report
-                if mix_mode == "Quote Fisse":
-                    mix_log = "Quote Fisse — " + " / ".join(
-                        f"V{k+1}:{quotas.get(k,0)}%" for k in paths.keys()
-                    )
-                else:
-                    mix_log = "Random (pesi Start%/End%)"
-
                 st.session_state.video_path   = out_v
                 st.session_state.preview_path = prev_v
                 st.session_state.report_data  = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
-:: MOTORE: video_decomposed [01.03]
+:: MOTORE: video_decomposed [05.03]
 :: AUDIO: 48 kHz / Float a 32 bit / Punto di Clipping
-:: PROCESSO: Collasso Ricorsivo
+:: PROCESSO: {mode_label}
 
 > TECHNICAL LOG SHEET:
 * Sorgenti Video: {engine.stats['sources']}
-* Frammenti Generati: {engine.stats['fragments']}
-* Mix: {mix_log}
-* Ritmo: {r_a}s >> {r_b}s (Random: {r_rand})
-* Strisce: {s_a}px >> {s_b}px (Random: {s_rand})
-* Geometria: {scan_dir}
+* Frammenti Generati: {total_frags}
+* Modalita': {mix_log}
+{extra_log}
 {'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
@@ -462,10 +607,6 @@ def main():
                 st.error(f"Errore: {e}")
 
             finally:
-                # Pulizia risorse: chiude i VideoFileClip sorgente e rimuove
-                # i file temporanei creati per questo render (sorgenti caricate
-                # e audio custom). video.mp4/preview.mp4 NON vengono toccati:
-                # restano su disco perche' servono ai download_button successivi.
                 if engine is not None:
                     engine.close_sources()
                 for p in paths.values():
@@ -479,13 +620,11 @@ def main():
                     except OSError:
                         pass
 
-        # RISULTATI
         if st.session_state.video_ready:
             st.markdown("---")
             st.caption("Preview (480p) — scarica per la versione completa")
             if st.session_state.preview_path and os.path.exists(st.session_state.preview_path):
                 st.video(st.session_state.preview_path)
-
             c_d1, c_d2 = st.columns(2)
             with c_d1:
                 if st.session_state.video_path and os.path.exists(st.session_state.video_path):

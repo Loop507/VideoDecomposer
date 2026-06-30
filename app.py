@@ -86,7 +86,9 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       stutter_prob, pitch_glitch, p_bar,
                       beat_slice_mode=False, beat_times=None,
                       crossfade_dur=0.0, freeze_on_beat=False,
-                      freeze_prob=0.0, freeze_dur=0.15):
+                      freeze_prob=0.0, freeze_dur=0.15,
+                      source_mode="random", source_weights=None,
+                      no_repeat=False):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
@@ -99,6 +101,11 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     - freeze_on_beat  : se True, alcune slice iniziano con un freeze-frame
     - freeze_prob     : probabilita' [0-1] che una slice abbia il freeze-frame
     - freeze_dur      : durata in secondi del freeze-frame
+    - source_mode     : "random" (puro caso, comportamento storico) oppure "pesata"
+                        (usa source_weights per favorire alcune sorgenti)
+    - source_weights  : dict {key: peso} usato quando source_mode == "pesata"
+    - no_repeat       : se True, vieta che la stessa sorgente venga scelta
+                        due slice consecutive di fila (comportamento "4 deck VJ")
 
     Anti-ripetizione v3: sistema bucket — distribuisce i tagli uniformemente
     nelle zone del sorgente, funziona bene sia su clip corti che su lunghi (50s+).
@@ -111,6 +118,19 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
     # Bucket anti-ripetizione per VJ Mode (stesso sistema del VideoEngine)
     recent_cuts = {}
+    last_k = [None]  # mutabile, per tracciare l'ultima sorgente usata (no_repeat)
+
+    def pick_source_key():
+        candidates = keys
+        if no_repeat and len(keys) > 1 and last_k[0] is not None:
+            candidates = [kk for kk in keys if kk != last_k[0]]
+        if source_mode == "pesata" and source_weights:
+            w = [max(0.0001, source_weights.get(kk, 1.0)) for kk in candidates]
+            chosen = random.choices(candidates, weights=w, k=1)[0]
+        else:
+            chosen = random.choice(candidates)
+        last_k[0] = chosen
+        return chosen
 
     def pick_start_dj(source, k, seg):
         max_start = max(0.0, source.duration - seg)
@@ -169,7 +189,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         if seg < 0.04:
             break
 
-        k = random.choice(keys)
+        k = pick_source_key()
         source = video_clips[k]
         start_p = pick_start_dj(source, k, seg)
         base_clip = source.subclip(start_p, start_p + seg).resize(newsize=target_size).set_fps(fps)
@@ -605,6 +625,32 @@ def main():
                 st.caption(f"_Preset {vj_genre} applicato — puoi ritoccare gli slider sopra, "
                            f"restano comunque a tempo della musica caricata (slice da beat fisso)._")
 
+            st.markdown("---")
+            st.subheader("Alternanza sorgenti (deck)")
+            loaded_keys_preview = [i for i in range(4) if files[i]]
+            source_mode_label = st.radio(
+                "Modalita'",
+                ["Casuale", "Pesata"],
+                horizontal=True,
+                help="Casuale = comportamento storico (ogni slice sceglie a caso tra le sorgenti). "
+                     "Pesata = imposti tu quanto ogni video deve essere presente."
+            )
+            source_mode = "pesata" if source_mode_label == "Pesata" else "random"
+            no_repeat = st.toggle(
+                "Mai la stessa sorgente due slice di fila",
+                value=False,
+                help="Comportamento 'VJ a 4 deck': alterna sempre tra le sorgenti caricate, "
+                     "evitando due slice consecutive dallo stesso video."
+            )
+            source_weights = {}
+            if source_mode == "pesata" and loaded_keys_preview:
+                default_w = round(100 / len(loaded_keys_preview))
+                for i in loaded_keys_preview:
+                    source_weights[i] = st.slider(
+                        f"Presenza V{i+1}: {files[i].name[:14]}", 0, 100, default_w,
+                        key=f"src_w_{i}"
+                    )
+
             # default per variabili Decompose non usate in VJ Mode
             r_rand = False; r_a = 0.2; r_b = 1.0
             use_scan = False; s_rand = False; s_a = 10; s_b = 80; scan_dir = "Orizzontale"
@@ -724,16 +770,24 @@ def main():
                         crossfade_dur=crossfade_dur,
                         freeze_on_beat=freeze_on_beat,
                         freeze_prob=freeze_prob,
-                        freeze_dur=freeze_dur
+                        freeze_dur=freeze_dur,
+                        source_mode=source_mode,
+                        source_weights=source_weights,
+                        no_repeat=no_repeat
                     )
                     mode_label = "VJ Mode"
                     slice_info = f"beat-driven ({beat_count} beat)" if beat_slice_mode and beat_times else f"{slice_dur}s fisso"
                     mix_log = (f"VJ Mode — slice {slice_info} / "
                                f"loop x{loop_reps} / stutter {int(stutter_prob*100)}%")
+                    src_alt_log = ("Pesata — " + " / ".join(
+                        f"V{k+1}:{source_weights.get(k,0)}%" for k in source_weights)
+                        if source_mode == "pesata" else "Casuale")
                     extra_log = (f"* Slice Mode: {slice_info}\n"
                                  f"* Loop Reps: {loop_reps}\n"
                                  f"* Stutter Prob: {int(stutter_prob*100)}%\n"
                                  f"* Pitch Glitch: {pitch_glitch}\n"
+                                 f"* Alternanza Sorgenti: {src_alt_log}"
+                                 f"{' (no ripetizioni consecutive)' if no_repeat else ''}\n"
                                  f"* Auto VJ: {auto_vj}" +
                                  (f" (preset {vj_genre})" if auto_vj and vj_genre else "") + "\n"
                                  f"* Crossfade: {int(crossfade_dur*1000)}ms\n"

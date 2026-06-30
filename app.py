@@ -82,13 +82,21 @@ def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, 
 # ---------------------------------------------------------------------------
 # REMIX DJ — genera sequenza slice/loop in stile CDJ
 # ---------------------------------------------------------------------------
+MEASURE_FACTORS = {
+    "1/16": 1/16, "1/8": 1/8, "1/6": 1/6, "1/4": 1/4, "1/3": 1/3, "1/2": 1/2,
+    "1/1": 1.0, "2": 2.0, "4": 4.0, "8": 8.0, "16": 16.0,
+}
+MEASURE_ORDER = ["1/16", "1/8", "1/6", "1/4", "1/3", "1/2", "1/1", "2", "4", "8", "16"]
+
 def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       stutter_prob, pitch_glitch, p_bar,
                       beat_slice_mode=False, beat_times=None,
                       crossfade_dur=0.0, freeze_on_beat=False,
                       freeze_prob=0.0, freeze_dur=0.15,
                       source_mode="random", source_weights=None,
-                      no_repeat=False):
+                      no_repeat=False,
+                      beat_subdivision_mode="fixed", beat_subdivision_factor=1.0,
+                      beat_subdivision_choices=None):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
@@ -106,6 +114,13 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     - source_weights  : dict {key: peso} usato quando source_mode == "pesata"
     - no_repeat       : se True, vieta che la stessa sorgente venga scelta
                         due slice consecutive di fila (comportamento "4 deck VJ")
+    - beat_subdivision_mode    : "fixed" (misura unica), "random_total" (random
+                        su tutte le misure), "random_subset" (random tra le
+                        misure scelte in beat_subdivision_choices)
+    - beat_subdivision_factor  : misura fissa, in unita' di beat (es. 0.25 = 1/4
+                        di beat, 4.0 = 4 beat per slice). Usata se mode="fixed".
+    - beat_subdivision_choices : lista di fattori (float) tra cui pescare a
+                        caso quando mode="random_subset"
 
     Anti-ripetizione v3: sistema bucket — distribuisce i tagli uniformemente
     nelle zone del sorgente, funziona bene sia su clip corti che su lunghi (50s+).
@@ -168,20 +183,57 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         cut_points = [0.0] + [b for b in beat_arr_sorted if 0.0 < b < duration] + [duration]
         cut_points = sorted(set(cut_points))
 
-        slice_schedule = []
+        # --- Segmenti base: un elemento per ogni intervallo beat-to-beat ---
+        base_segments = []
         for i in range(len(cut_points) - 1):
             d = cut_points[i+1] - cut_points[i]
             if d <= 0:
                 continue
             if d > 4.0:
-                # Buco troppo grande (es. prima del primo beat, o coda oltre
-                # l'ultimo beat rilevato): lo riempiamo con slice di durata
-                # pari all'intervallo medio reale, cosi' restano "a tempo".
                 n_fill = max(1, round(d / avg_interval))
                 fill_d = d / n_fill
-                slice_schedule.extend([fill_d] * n_fill)
+                base_segments.extend([fill_d] * n_fill)
             else:
-                slice_schedule.append(d)
+                base_segments.append(d)
+
+        # --- Applica la subdivisione beat ---
+        # beat_subdivision_mode:
+        #   "fixed"        -> ogni segmento usa beat_subdivision_factor
+        #   "random_total" -> fattore pescato a caso tra TUTTE le misure per ogni segmento
+        #   "random_subset"-> fattore pescato tra beat_subdivision_choices per ogni segmento
+        ALL_FACTORS = list(MEASURE_FACTORS.values())
+        choices_pool = (beat_subdivision_choices or ALL_FACTORS)
+        choices_pool = [f for f in choices_pool if f > 0]
+        if not choices_pool:
+            choices_pool = [1.0]
+
+        slice_schedule = []
+        i = 0
+        while i < len(base_segments):
+            if beat_subdivision_mode == "fixed":
+                sv = beat_subdivision_factor
+            elif beat_subdivision_mode == "random_total":
+                sv = random.choice(ALL_FACTORS)
+            else:  # random_subset
+                sv = random.choice(choices_pool)
+
+            if sv >= 1.0:
+                # Raggruppa: somma sv segmenti consecutivi in uno solo
+                n = max(1, round(sv))
+                group = base_segments[i:i + n]
+                total = sum(group)
+                if total >= 0.04:
+                    slice_schedule.append(total)
+                i += n
+            else:
+                # Suddividi: spezza il segmento corrente in 1/sv parti uguali
+                n = max(1, round(1.0 / sv))
+                piece = base_segments[i] / n
+                if piece >= 0.04:
+                    slice_schedule.extend([piece] * n)
+                else:
+                    slice_schedule.append(base_segments[i])
+                i += 1
     else:
         # Slice fissa: costruisce lista uniforme
         n = max(1, int(duration / slice_dur)) + 2
@@ -502,6 +554,7 @@ def main():
             pitch_glitch = False; beat_slice_mode = False
             auto_vj = False; crossfade_dur = 0.0
             freeze_on_beat = False; freeze_prob = 0.0; freeze_dur = 0.15
+            beat_subdivision_mode = "fixed"; beat_subdivision_factor = 1.0; beat_subdivision_choices = None
         else:
             st.subheader("Parametri VJ Mode")
             slice_options = [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
@@ -570,9 +623,79 @@ def main():
                     format_func=lambda x: f"{x}s",
                     help="0.1s = stutter ultra-rapido, 2.0s = loop lungo stile CDJ"
                 )
+                # Subdivisione non applicabile in slice manuale: defaults
+                beat_subdivision_mode = "fixed"
+                beat_subdivision_factor = 1.0
+                beat_subdivision_choices = None
             else:
                 slice_dur = 0.25  # valore di fallback, non usato
                 st.caption("_Durata slice determinata dai beat dell'audio._")
+
+                # --- Subdivisione Beat ---
+                st.markdown("**Subdivisione beat**")
+                subdiv_mode_label = st.radio(
+                    "Modalita'",
+                    ["Fissa", "Random totale", "Random in range"],
+                    horizontal=True,
+                    key="subdiv_mode_radio",
+                    help=(
+                        "Fissa: tutti gli slice usano la stessa misura. "
+                        "Random totale: ogni slice pesca una misura a caso tra tutte. "
+                        "Random in range: ogni slice pesca tra le misure nel range scelto."
+                    )
+                )
+
+                if subdiv_mode_label == "Fissa":
+                    beat_subdivision_mode = "fixed"
+                    subdiv_sel = st.selectbox(
+                        "Misura",
+                        MEASURE_ORDER,
+                        index=MEASURE_ORDER.index("1/1"),
+                        key="subdiv_fixed_sel",
+                        help="< 1/1 = taglia il beat in frazioni (stutter/roll) | > 1 = raggruppa piu' beat per slice"
+                    )
+                    beat_subdivision_factor = MEASURE_FACTORS[subdiv_sel]
+                    beat_subdivision_choices = None
+                    if beat_subdivision_factor < 1.0:
+                        desc = f"frazionato x{round(1/beat_subdivision_factor)}"
+                    else:
+                        desc = f"{round(beat_subdivision_factor)} beat per slice"
+                    st.caption(f"_Slice = {subdiv_sel} beat — {desc}_")
+
+                elif subdiv_mode_label == "Random totale":
+                    beat_subdivision_mode = "random_total"
+                    beat_subdivision_factor = 1.0
+                    beat_subdivision_choices = None
+                    st.caption("_Ogni slice riceve una misura casuale tra 1/16 e 16 beat._")
+
+                else:  # Random in range
+                    beat_subdivision_mode = "random_subset"
+                    beat_subdivision_factor = 1.0
+                    col_ra, col_rb = st.columns(2)
+                    with col_ra:
+                        range_min_label = st.selectbox(
+                            "Min", MEASURE_ORDER,
+                            index=MEASURE_ORDER.index("1/4"),
+                            key="subdiv_range_min"
+                        )
+                    with col_rb:
+                        range_max_label = st.selectbox(
+                            "Max", MEASURE_ORDER,
+                            index=MEASURE_ORDER.index("4"),
+                            key="subdiv_range_max"
+                        )
+                    min_f = MEASURE_FACTORS[range_min_label]
+                    max_f = MEASURE_FACTORS[range_max_label]
+                    if min_f > max_f:
+                        min_f, max_f = max_f, min_f
+                    beat_subdivision_choices = [
+                        MEASURE_FACTORS[m] for m in MEASURE_ORDER
+                        if min_f <= MEASURE_FACTORS[m] <= max_f
+                    ]
+                    if not beat_subdivision_choices:
+                        beat_subdivision_choices = [1.0]
+                    labels_in_range = [m for m in MEASURE_ORDER if min_f <= MEASURE_FACTORS[m] <= max_f]
+                    st.caption(f"_Random tra: {', '.join(labels_in_range)}_")
 
             st.markdown("---")
             loop_reps = st.slider(
@@ -788,10 +911,18 @@ def main():
                         freeze_dur=freeze_dur,
                         source_mode=source_mode,
                         source_weights=source_weights,
-                        no_repeat=no_repeat
+                        no_repeat=no_repeat,
+                        beat_subdivision_mode=beat_subdivision_mode,
+                        beat_subdivision_factor=beat_subdivision_factor,
+                        beat_subdivision_choices=beat_subdivision_choices
                     )
                     mode_label = "VJ Mode"
-                    slice_info = f"beat-driven ({beat_count} beat)" if beat_slice_mode and beat_times else f"{slice_dur}s fisso"
+                    if beat_slice_mode and beat_times:
+                        _subdiv_lbl = next((m for m, v in MEASURE_FACTORS.items() if abs(v - beat_subdivision_factor) < 1e-9), "1/1")
+                        _subdiv_str = {"fixed": _subdiv_lbl, "random_total": "random totale", "random_subset": "random in range"}.get(beat_subdivision_mode, _subdiv_lbl)
+                        slice_info = f"beat-driven ({beat_count} beat, subdiv {_subdiv_str})"
+                    else:
+                        slice_info = f"{slice_dur}s fisso"
                     mix_log = (f"VJ Mode — slice {slice_info} / "
                                f"loop x{loop_reps} / stutter {int(stutter_prob*100)}%")
                     src_alt_log = ("Pesata — " + " / ".join(

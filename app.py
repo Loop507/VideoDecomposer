@@ -40,6 +40,42 @@ def analyze_audio(audio_file, duration):
         os.remove(tmp_path)
     return beat_times, rms_envelope
 
+def detect_bpm(audio_file):
+    """Stima rapida del BPM analizzando solo i primi 30s del file audio.
+    Restituisce il BPM come float, o None in caso di errore.
+    Non consuma il file_uploader (fa seek(0) alla fine)."""
+    try:
+        orig_name = getattr(audio_file, "name", "") or ""
+        suffix = os.path.splitext(orig_name)[1].lower()
+        if suffix not in (".mp3", ".wav"):
+            suffix = ".mp3"
+        audio_file.seek(0)
+        raw = audio_file.read()
+        audio_file.seek(0)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as t:
+            t.write(raw)
+            tmp_path = t.name
+        try:
+            y, sr = librosa.load(tmp_path, sr=22050, mono=True, duration=30.0)
+            tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+            return float(tempo)
+        finally:
+            os.remove(tmp_path)
+    except Exception:
+        return None
+
+
+def bpm_to_default_subdivision(bpm):
+    """Sceglie la misura di subdivisione piu' sensata dato il BPM rilevato."""
+    if bpm is None:
+        return "4"
+    if bpm < 75:
+        return "2"    # lento: 2 beat = fraseggio naturale senza essere statico
+    if bpm <= 175:
+        return "4"    # fascia principale: 1 battuta in 4/4
+    return "2"        # molto veloce (D&B, hardcore): 4 beat ok ma 2 e' piu' incisivo
+
+
 # --- MOTORE PROCEDURALE (slit scan) ---
 def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, scan_mode,
                                 rms_envelope=None):
@@ -95,6 +131,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       freeze_prob=0.0, freeze_dur=0.15,
                       source_mode="random", source_weights=None,
                       no_repeat=False,
+                      slice_density=1.0,
                       beat_subdivision_mode="fixed", beat_subdivision_factor=1.0,
                       beat_subdivision_choices=None):
     """
@@ -242,67 +279,119 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     estimated = max(1, len(slice_schedule))
     sched_idx = 0
 
-    # Beat reali ordinati, per ancorare il freeze-frame al tempo della musica
-    # (funziona sia su beat fitti/regolari come la techno sia su beat piu'
-    # radi/irregolari come la musica classica, perche' si basa sui beat
-    # effettivamente rilevati da analyze_audio, non su una probabilita' a caso)
+    # Beat reali ordinati per freeze-frame e density check
     beat_arr = sorted(beat_times) if beat_times else []
     beat_tolerance = max(1.5 / max(fps, 1), 0.05)
 
-    while curr_t < duration and sched_idx < len(slice_schedule):
-        seg = slice_schedule[sched_idx]
-        seg = min(seg, duration - curr_t)
+    # Timing frame-accurate: teniamo il contatore in frame interi
+    # per evitare il drift cumulativo da arrotondamento float.
+    # curr_t viene ricalcolato da frame_count ad ogni iterazione.
+    total_frames = max(1, round(duration * fps))
+    frame_count = 0  # frame gia' renderizzati
+
+    # Stato per slice_density: accumula segmenti che "passano" senza taglio
+    pending_seg   = 0.0   # durata accumulata da consumare con la stessa sorgente
+    pending_k     = None  # sorgente corrente (None = prima slice)
+    pending_start = 0.0   # punto di inizio nel video sorgente
+
+    while frame_count < total_frames and sched_idx < len(slice_schedule):
+        curr_t = frame_count / fps
+        seg_raw = slice_schedule[sched_idx]
         sched_idx += 1
-        if seg < 0.04:
+
+        # Frame-accurate: quanti frame servono per questo segmento?
+        remaining_frames = total_frames - frame_count
+        n_frames = max(1, round(seg_raw * fps))
+        n_frames = min(n_frames, remaining_frames)
+        seg = n_frames / fps
+        if seg < 0.02:
             break
 
-        k = pick_source_key()
-        source = video_clips[k]
-        start_p = pick_start_dj(source, k, seg)
-        base_clip = source.subclip(start_p, start_p + seg).resize(newsize=target_size).set_fps(fps)
+        # ── Slice density: decide se questo beat genera un taglio nuovo ──
+        # Se il dado non supera la soglia, accorpa il segmento al pending
+        # (stessa sorgente, stessa posizione — effetto "continua a girare").
+        make_cut = (pending_k is None) or (random.random() < slice_density)
 
-        if pitch_glitch and random.random() < 0.15:
-            factor = random.choice([0.5, 0.75, 1.5, 2.0])
-            base_clip = base_clip.speedx(factor).set_duration(seg)
+        if make_cut:
+            # Scarica eventuale pending prima di iniziare il nuovo clip
+            if pending_k is not None and pending_seg >= 0.02:
+                pn = max(1, round(pending_seg * fps))
+                p_actual = pn / fps
+                p_src = video_clips[pending_k]
+                p_end = min(pending_start + p_actual, p_src.duration)
+                pclip = p_src.subclip(pending_start, p_end).resize(newsize=target_size).set_fps(fps).set_duration(p_actual)
+                all_clips.append(pclip)
+                frame_count += pn
+                total_fragments += 1
+                pending_seg = 0.0
 
-        on_beat = False
-        if freeze_on_beat:
-            if beat_arr:
-                idx = bisect.bisect_left(beat_arr, curr_t)
-                candidates = []
-                if idx < len(beat_arr):
-                    candidates.append(beat_arr[idx])
-                if idx > 0:
-                    candidates.append(beat_arr[idx - 1])
-                if candidates:
-                    nearest = min(candidates, key=lambda b: abs(b - curr_t))
-                    on_beat = abs(nearest - curr_t) <= beat_tolerance
+            # Nuovo taglio
+            k = pick_source_key()
+            source = video_clips[k]
+            start_p = pick_start_dj(source, k, seg)
+            base_clip = source.subclip(start_p, min(start_p + seg, source.duration)).resize(newsize=target_size).set_fps(fps).set_duration(seg)
+
+            if pitch_glitch and random.random() < 0.15:
+                factor = random.choice([0.5, 0.75, 1.5, 2.0])
+                base_clip = base_clip.speedx(factor).set_duration(seg)
+
+            # Freeze-frame on beat
+            on_beat = False
+            if freeze_on_beat:
+                if beat_arr:
+                    idx = bisect.bisect_left(beat_arr, curr_t)
+                    candidates = []
+                    if idx < len(beat_arr):
+                        candidates.append(beat_arr[idx])
+                    if idx > 0:
+                        candidates.append(beat_arr[idx - 1])
+                    if candidates:
+                        nearest = min(candidates, key=lambda b: abs(b - curr_t))
+                        on_beat = abs(nearest - curr_t) <= beat_tolerance
+                else:
+                    on_beat = True
+
+            if freeze_on_beat and on_beat and freeze_prob > 0 and random.random() < freeze_prob and seg > 0.15:
+                f_dur = min(freeze_dur, seg * 0.5)
+                frame_f = base_clip.get_frame(0)
+                freeze_clip = ImageClip(frame_f).set_duration(f_dur).set_fps(fps)
+                rest_dur = seg - f_dur
+                rest_clip = base_clip.subclip(0, rest_dur) if rest_dur > 0.04 else base_clip.set_duration(0.04)
+                base_clip = concatenate_videoclips([freeze_clip, rest_clip], method="chain").set_duration(seg)
+
+            if random.random() < stutter_prob and loop_reps > 1:
+                combo = concatenate_videoclips([base_clip] * loop_reps, method="chain")
+                stutter_frames = min(n_frames * loop_reps, total_frames - frame_count)
+                combo = combo.set_duration(stutter_frames / fps)
+                all_clips.append(combo)
+                frame_count += stutter_frames
             else:
-                # nessun beat rilevato: fallback, ogni slice e' candidata
-                on_beat = True
+                all_clips.append(base_clip)
+                frame_count += n_frames
 
-        if freeze_on_beat and on_beat and freeze_prob > 0 and random.random() < freeze_prob and seg > 0.15:
-            f_dur = min(freeze_dur, seg * 0.5)
-            frame = base_clip.get_frame(0)
-            freeze_clip = ImageClip(frame).set_duration(f_dur).set_fps(fps)
-            rest_dur = seg - f_dur
-            rest_clip = base_clip.subclip(0, rest_dur) if rest_dur > 0.04 else base_clip.set_duration(0.04)
-            base_clip = concatenate_videoclips([freeze_clip, rest_clip], method="chain").set_duration(seg)
+            pending_seg   = 0.0
+            pending_k     = k
+            pending_start = start_p + seg
+            total_fragments += 1
 
-        if random.random() < stutter_prob and loop_reps > 1:
-            combo = concatenate_videoclips([base_clip] * loop_reps, method="chain")
-            combo = combo.set_duration(seg * loop_reps)
-            all_clips.append(combo)
-            curr_t += seg * loop_reps
         else:
-            all_clips.append(base_clip)
-            curr_t += seg
+            # Nessun taglio: accumula nel pending (stessa sorgente)
+            pending_seg += seg
 
-        total_fragments += 1
         p_bar.progress(
             min(total_fragments / estimated * 0.5, 0.5),
             text=f"VJ Mode: {total_fragments} slice"
         )
+
+    # Scarica eventuale pending residuo a fine schedule
+    if pending_k is not None and pending_seg >= 0.02:
+        p_src = video_clips[pending_k]
+        pn = max(1, round(pending_seg * fps))
+        p_actual = pn / fps
+        p_end = min(pending_start + p_actual, p_src.duration)
+        pclip = p_src.subclip(pending_start, p_end).resize(newsize=target_size).set_fps(fps).set_duration(p_actual)
+        all_clips.append(pclip)
+        total_fragments += 1
 
     if crossfade_dur > 0 and len(all_clips) > 1:
         positioned = []
@@ -498,6 +587,18 @@ def main():
         files = [st.file_uploader(f"Video {i+1}", type=["mp4","mov"]) for i in range(4)]
         st.divider()
         audio_file = st.file_uploader("Audio (mp3/wav)", type=["mp3","wav"])
+        if audio_file is not None:
+            audio_key = f"bpm_{audio_file.name}_{audio_file.size}"
+            if st.session_state.get("_bpm_key") != audio_key:
+                with st.spinner("Analisi BPM..."):
+                    _bpm = detect_bpm(audio_file)
+                st.session_state["detected_bpm"] = _bpm
+                st.session_state["_bpm_key"] = audio_key
+            detected_bpm = st.session_state.get("detected_bpm")
+            if detected_bpm:
+                st.caption(f"_BPM rilevato: **{detected_bpm:.1f}**_")
+        else:
+            detected_bpm = None
         st.divider()
         st.subheader("Modalita'")
         app_mode = st.radio("", ["Decompose", "VJ Mode"], horizontal=True)
@@ -555,6 +656,7 @@ def main():
             auto_vj = False; crossfade_dur = 0.0
             freeze_on_beat = False; freeze_prob = 0.0; freeze_dur = 0.15
             beat_subdivision_mode = "fixed"; beat_subdivision_factor = 1.0; beat_subdivision_choices = None
+            slice_density = 1.0
         else:
             st.subheader("Parametri VJ Mode")
             slice_options = [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
@@ -627,6 +729,7 @@ def main():
                 beat_subdivision_mode = "fixed"
                 beat_subdivision_factor = 1.0
                 beat_subdivision_choices = None
+                slice_density = 1.0
             else:
                 slice_dur = 0.25  # valore di fallback, non usato
                 st.caption("_Durata slice determinata dai beat dell'audio._")
@@ -647,12 +750,16 @@ def main():
 
                 if subdiv_mode_label == "Fissa":
                     beat_subdivision_mode = "fixed"
+                    # Auto-adatta il default al BPM rilevato
+                    _auto_subdiv = bpm_to_default_subdivision(
+                        st.session_state.get("detected_bpm")
+                    )
                     subdiv_sel = st.selectbox(
                         "Misura",
                         MEASURE_ORDER,
-                        index=MEASURE_ORDER.index("1/1"),
+                        index=MEASURE_ORDER.index(_auto_subdiv),
                         key="subdiv_fixed_sel",
-                        help="< 1/1 = taglia il beat in frazioni (stutter/roll) | > 1 = raggruppa piu' beat per slice"
+                        help="< 1/1 = taglia il beat in frazioni (stutter/roll) | > 1 = raggruppa piu' beat per slice. Il default si adatta automaticamente al BPM rilevato."
                     )
                     beat_subdivision_factor = MEASURE_FACTORS[subdiv_sel]
                     beat_subdivision_choices = None
@@ -660,7 +767,8 @@ def main():
                         desc = f"frazionato x{round(1/beat_subdivision_factor)}"
                     else:
                         desc = f"{round(beat_subdivision_factor)} beat per slice"
-                    st.caption(f"_Slice = {subdiv_sel} beat — {desc}_")
+                    _bpm_note = f" · auto da {st.session_state['detected_bpm']:.1f} bpm" if st.session_state.get("detected_bpm") else ""
+                    st.caption(f"_Slice = {subdiv_sel} beat — {desc}{_bpm_note}_")
 
                 elif subdiv_mode_label == "Random totale":
                     beat_subdivision_mode = "random_total"
@@ -696,6 +804,22 @@ def main():
                         beat_subdivision_choices = [1.0]
                     labels_in_range = [m for m in MEASURE_ORDER if min_f <= MEASURE_FACTORS[m] <= max_f]
                     st.caption(f"_Random tra: {', '.join(labels_in_range)}_")
+
+                # --- Densità slice ---
+                st.markdown("**Densita' slice**")
+                slice_density_pct = st.slider(
+                    "% beat che generano un taglio",
+                    min_value=10, max_value=100, value=100, step=5,
+                    key="slice_density_slider",
+                    help=(
+                        "100% = ogni beat genera un nuovo taglio (comportamento classico). "
+                        "Valori inferiori lasciano 'respirare' il video: alcuni beat passano "
+                        "senza cambiare sorgente, creando fraseggi piu' lunghi."
+                    )
+                )
+                slice_density = slice_density_pct / 100.0
+                if slice_density_pct < 100:
+                    st.caption(f"_Solo il {slice_density_pct}% dei beat genera un taglio — il resto continua sulla stessa sorgente._")
 
             st.markdown("---")
             loop_reps = st.slider(
@@ -912,6 +1036,7 @@ def main():
                         source_mode=source_mode,
                         source_weights=source_weights,
                         no_repeat=no_repeat,
+                        slice_density=slice_density,
                         beat_subdivision_mode=beat_subdivision_mode,
                         beat_subdivision_factor=beat_subdivision_factor,
                         beat_subdivision_choices=beat_subdivision_choices

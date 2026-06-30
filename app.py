@@ -5,7 +5,7 @@ import tempfile
 import time
 import numpy as np
 from datetime import datetime
-from moviepy.editor import VideoFileClip, concatenate_videoclips
+from moviepy.editor import VideoFileClip, concatenate_videoclips, ImageClip, CompositeVideoClip
 from PIL import Image
 import librosa
 
@@ -83,7 +83,9 @@ def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, 
 # ---------------------------------------------------------------------------
 def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       stutter_prob, pitch_glitch, p_bar,
-                      beat_slice_mode=False, beat_times=None):
+                      beat_slice_mode=False, beat_times=None,
+                      crossfade_dur=0.0, freeze_on_beat=False,
+                      freeze_prob=0.0, freeze_dur=0.15):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
@@ -92,6 +94,10 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     - pitch_glitch    : se True, alcuni slice vengono speed-warpati
     - beat_slice_mode : se True, usa i beat come punti di taglio invece di slice_dur fisso
     - beat_times      : lista di timestamp beat (da analyze_audio)
+    - crossfade_dur   : durata in secondi del crossfade tra slice consecutive (0 = taglio secco)
+    - freeze_on_beat  : se True, alcune slice iniziano con un freeze-frame
+    - freeze_prob     : probabilita' [0-1] che una slice abbia il freeze-frame
+    - freeze_dur      : durata in secondi del freeze-frame
 
     Anti-ripetizione v3: sistema bucket — distribuisce i tagli uniformemente
     nelle zone del sorgente, funziona bene sia su clip corti che su lunghi (50s+).
@@ -164,6 +170,14 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             factor = random.choice([0.5, 0.75, 1.5, 2.0])
             base_clip = base_clip.speedx(factor).set_duration(seg)
 
+        if freeze_on_beat and freeze_prob > 0 and random.random() < freeze_prob and seg > 0.15:
+            f_dur = min(freeze_dur, seg * 0.5)
+            frame = base_clip.get_frame(0)
+            freeze_clip = ImageClip(frame).set_duration(f_dur).set_fps(fps)
+            rest_dur = seg - f_dur
+            rest_clip = base_clip.subclip(0, rest_dur) if rest_dur > 0.04 else base_clip.set_duration(0.04)
+            base_clip = concatenate_videoclips([freeze_clip, rest_clip], method="chain").set_duration(seg)
+
         if random.random() < stutter_prob and loop_reps > 1:
             combo = concatenate_videoclips([base_clip] * loop_reps, method="chain")
             combo = combo.set_duration(seg * loop_reps)
@@ -179,7 +193,23 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             text=f"VJ Mode: {total_fragments} slice"
         )
 
-    final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
+    if crossfade_dur > 0 and len(all_clips) > 1:
+        positioned = []
+        t = 0.0
+        for i, clip in enumerate(all_clips):
+            if i == 0:
+                positioned.append(clip.set_start(0))
+                t = clip.duration
+            else:
+                cf = min(crossfade_dur, clip.duration * 0.4, all_clips[i - 1].duration * 0.4)
+                cf = max(cf, 0.0)
+                start_t = max(0.0, t - cf)
+                c = clip.crossfadein(cf) if cf > 0 else clip
+                positioned.append(c.set_start(start_t))
+                t = start_t + clip.duration
+        final = CompositeVideoClip(positioned, size=target_size).set_duration(min(t, duration))
+    else:
+        final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
     return final, total_fragments
 
 # ---------------------------------------------------------------------------
@@ -411,20 +441,34 @@ def main():
             # default per variabili DJ non usate in Decompose
             slice_dur = 0.25; loop_reps = 2; stutter_prob = 0.4
             pitch_glitch = False; beat_slice_mode = False
+            auto_vj = False; crossfade_dur = 0.0
+            freeze_on_beat = False; freeze_prob = 0.0; freeze_dur = 0.15
         else:
             st.subheader("Parametri VJ Mode")
             slice_options = [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 
+            auto_vj = st.toggle(
+                "Automatico (a tempo di musica caricata)",
+                value=False,
+                disabled=(audio_file is None),
+                help="Sincronizza tutto alla musica caricata: slice da beat, crossfade "
+                     "e freeze-frame impostati automaticamente. Richiede audio caricato."
+            )
+            if audio_file is None:
+                st.caption("_Carica un audio nella sidebar per attivare la modalita' automatica._")
+
+            st.markdown("---")
+
             # Toggle PRIMA dello slider: se attivo, la durata slice viene dal beat
             beat_slice_mode = st.toggle(
                 "Slice automatico da beat",
-                value=False,
-                disabled=(audio_file is None),
+                value=auto_vj,
+                disabled=(audio_file is None) or auto_vj,
                 help="Usa i beat della musica caricata come punti di taglio. "
                      "Richiede audio caricato nella sidebar."
             )
-            if audio_file is None:
-                st.caption("_Carica un audio nella sidebar per attivare lo slice automatico._")
+            if auto_vj:
+                beat_slice_mode = True
 
             # Slider durata visibile solo in modalita' manuale
             if not beat_slice_mode:
@@ -442,16 +486,64 @@ def main():
             st.markdown("---")
             loop_reps = st.slider(
                 "Ripetizioni loop (stutter)", min_value=1, max_value=8, value=2,
+                disabled=auto_vj,
                 help="Quante volte uno slice viene ripetuto. 1 = nessun loop."
             )
             stutter_prob = st.slider(
-                "Probabilita' stutter %", min_value=0, max_value=100, value=40,
+                "Probabilita' stutter %", min_value=0, max_value=100,
+                value=40 if not auto_vj else 30,
+                disabled=auto_vj,
                 help="Percentuale di slice che vengono stutterati."
             ) / 100.0
             pitch_glitch = st.checkbox(
-                "Pitch Glitch (speed warp)", value=False,
+                "Pitch Glitch (speed warp)", value=False, disabled=auto_vj,
                 help="Alcuni slice vengono accelerati o rallentati casualmente (x0.5 / x2.0)."
             )
+
+            st.markdown("---")
+            crossfade_on = st.toggle(
+                "Crossfade tra slice", value=auto_vj, disabled=auto_vj,
+                help="Dissolvenza incrociata tra una slice e la successiva invece del taglio secco."
+            )
+            if auto_vj:
+                crossfade_on = True
+            if crossfade_on:
+                crossfade_ms = st.slider(
+                    "Durata crossfade (ms)", min_value=20, max_value=300,
+                    value=80 if auto_vj else 100, step=10, disabled=auto_vj,
+                    help="Sovrapposizione tra slice consecutive."
+                )
+                crossfade_dur = crossfade_ms / 1000.0
+            else:
+                crossfade_dur = 0.0
+
+            freeze_on_beat = st.toggle(
+                "Freeze-frame on beat", value=auto_vj, disabled=auto_vj,
+                help="Su alcune slice, congela il primo frame per una frazione di secondo "
+                     "prima di riprendere — effetto VJ classico."
+            )
+            if auto_vj:
+                freeze_on_beat = True
+            if freeze_on_beat:
+                freeze_prob = st.slider(
+                    "Probabilita' freeze %", min_value=0, max_value=100,
+                    value=25 if auto_vj else 20, disabled=auto_vj,
+                    help="Percentuale di slice in cui scatta il freeze-frame."
+                ) / 100.0
+                freeze_ms = st.slider(
+                    "Durata freeze (ms)", min_value=50, max_value=500,
+                    value=150, step=10, disabled=auto_vj,
+                    help="Durata del frame congelato."
+                )
+                freeze_dur = freeze_ms / 1000.0
+            else:
+                freeze_prob = 0.0
+                freeze_dur = 0.15
+
+            if auto_vj:
+                st.caption("_Modalita' automatica attiva: slice, crossfade e freeze "
+                           "sono guidati dalla musica caricata, niente da regolare a mano._")
+
             # default per variabili Decompose non usate in VJ Mode
             r_rand = False; r_a = 0.2; r_b = 1.0
             use_scan = False; s_rand = False; s_a = 10; s_b = 80; scan_dir = "Orizzontale"
@@ -567,7 +659,11 @@ def main():
                         engine.video_clips, durata, fps,
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
                         beat_slice_mode=beat_slice_mode,
-                        beat_times=beat_times
+                        beat_times=beat_times,
+                        crossfade_dur=crossfade_dur,
+                        freeze_on_beat=freeze_on_beat,
+                        freeze_prob=freeze_prob,
+                        freeze_dur=freeze_dur
                     )
                     mode_label = "VJ Mode"
                     slice_info = f"beat-driven ({beat_count} beat)" if beat_slice_mode and beat_times else f"{slice_dur}s fisso"
@@ -577,6 +673,11 @@ def main():
                                  f"* Loop Reps: {loop_reps}\n"
                                  f"* Stutter Prob: {int(stutter_prob*100)}%\n"
                                  f"* Pitch Glitch: {pitch_glitch}\n"
+                                 f"* Auto VJ: {auto_vj}\n"
+                                 f"* Crossfade: {int(crossfade_dur*1000)}ms\n"
+                                 f"* Freeze on beat: {freeze_on_beat}" +
+                                 (f" ({int(freeze_prob*100)}% / {int(freeze_dur*1000)}ms)"
+                                  if freeze_on_beat else "") + "\n"
                                  f"* Audio Mix: {audio_mix_mode}" +
                                  (f" (musica {int(vol_music*100)}% / originale {int(vol_original*100)}%)"
                                   if audio_mix_mode == "mix" else ""))

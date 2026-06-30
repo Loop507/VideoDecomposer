@@ -476,10 +476,42 @@ def main():
                 value=False,
                 disabled=(audio_file is None),
                 help="Sincronizza tutto alla musica caricata: slice da beat, crossfade "
-                     "e freeze-frame impostati automaticamente. Richiede audio caricato."
+                     "e freeze-frame impostati automaticamente in base al genere scelto. "
+                     "Richiede audio caricato."
             )
             if audio_file is None:
                 st.caption("_Carica un audio nella sidebar per attivare la modalita' automatica._")
+
+            # Preset per genere musicale — valori tarati su stutter/loop/crossfade/freeze
+            VJ_PRESETS = {
+                "Techno":   dict(loop_reps=3, stutter_prob=0.50, pitch_glitch=False,
+                                  crossfade_ms=40,  freeze_prob=0.35, freeze_ms=100),
+                "House":    dict(loop_reps=2, stutter_prob=0.30, pitch_glitch=False,
+                                  crossfade_ms=100, freeze_prob=0.20, freeze_ms=150),
+                "Ambient":  dict(loop_reps=1, stutter_prob=0.10, pitch_glitch=False,
+                                  crossfade_ms=250, freeze_prob=0.10, freeze_ms=300),
+                "Pop":      dict(loop_reps=2, stutter_prob=0.25, pitch_glitch=False,
+                                  crossfade_ms=80,  freeze_prob=0.20, freeze_ms=150),
+                "Classica": dict(loop_reps=1, stutter_prob=0.05, pitch_glitch=False,
+                                  crossfade_ms=300, freeze_prob=0.08, freeze_ms=250),
+            }
+            if auto_vj:
+                vj_genre = st.selectbox(
+                    "Stile musicale",
+                    list(VJ_PRESETS.keys()),
+                    index=0,
+                    help="Tara crossfade, freeze, stutter e loop sul genere del brano caricato."
+                )
+                preset = VJ_PRESETS[vj_genre]
+                st.caption(
+                    f"_Preset {vj_genre}: loop x{preset['loop_reps']} · "
+                    f"stutter {int(preset['stutter_prob']*100)}% · "
+                    f"crossfade {preset['crossfade_ms']}ms · "
+                    f"freeze {int(preset['freeze_prob']*100)}%/{preset['freeze_ms']}ms_"
+                )
+            else:
+                vj_genre = None
+                preset = None
 
             st.markdown("---")
 
@@ -509,32 +541,35 @@ def main():
 
             st.markdown("---")
             loop_reps = st.slider(
-                "Ripetizioni loop (stutter)", min_value=1, max_value=8, value=2,
-                disabled=auto_vj,
+                "Ripetizioni loop (stutter)", min_value=1, max_value=8,
+                value=preset["loop_reps"] if auto_vj else 2,
+                key=f"loop_reps_{vj_genre}",
                 help="Quante volte uno slice viene ripetuto. 1 = nessun loop."
             )
             stutter_prob = st.slider(
                 "Probabilita' stutter %", min_value=0, max_value=100,
-                value=40 if not auto_vj else 30,
-                disabled=auto_vj,
+                value=int(preset["stutter_prob"] * 100) if auto_vj else 40,
+                key=f"stutter_prob_{vj_genre}",
                 help="Percentuale di slice che vengono stutterati."
             ) / 100.0
             pitch_glitch = st.checkbox(
-                "Pitch Glitch (speed warp)", value=False, disabled=auto_vj,
+                "Pitch Glitch (speed warp)",
+                value=preset["pitch_glitch"] if auto_vj else False,
+                key=f"pitch_glitch_{vj_genre}",
                 help="Alcuni slice vengono accelerati o rallentati casualmente (x0.5 / x2.0)."
             )
 
             st.markdown("---")
             crossfade_on = st.toggle(
-                "Crossfade tra slice", value=auto_vj, disabled=auto_vj,
+                "Crossfade tra slice", value=auto_vj,
+                key=f"crossfade_on_{vj_genre}",
                 help="Dissolvenza incrociata tra una slice e la successiva invece del taglio secco."
             )
-            if auto_vj:
-                crossfade_on = True
             if crossfade_on:
                 crossfade_ms = st.slider(
                     "Durata crossfade (ms)", min_value=20, max_value=300,
-                    value=80 if auto_vj else 100, step=10, disabled=auto_vj,
+                    value=preset["crossfade_ms"] if auto_vj else 100, step=10,
+                    key=f"crossfade_ms_{vj_genre}",
                     help="Sovrapposizione tra slice consecutive."
                 )
                 crossfade_dur = crossfade_ms / 1000.0
@@ -542,22 +577,23 @@ def main():
                 crossfade_dur = 0.0
 
             freeze_on_beat = st.toggle(
-                "Freeze-frame on beat", value=auto_vj, disabled=auto_vj,
+                "Freeze-frame on beat", value=auto_vj,
+                key=f"freeze_on_beat_{vj_genre}",
                 help="Su alcune slice, congela il primo frame per una frazione di secondo "
                      "prima di riprendere — effetto VJ classico."
             )
-            if auto_vj:
-                freeze_on_beat = True
             if freeze_on_beat:
                 freeze_prob = st.slider(
                     "Probabilita' freeze %", min_value=0, max_value=100,
-                    value=25 if auto_vj else 20, disabled=auto_vj,
+                    value=int(preset["freeze_prob"] * 100) if auto_vj else 20,
+                    key=f"freeze_prob_{vj_genre}",
                     help="Percentuale dei beat reali rilevati nell'audio su cui scatta "
                          "il freeze-frame (ancorato al beat, non casuale)."
                 ) / 100.0
                 freeze_ms = st.slider(
                     "Durata freeze (ms)", min_value=50, max_value=500,
-                    value=150, step=10, disabled=auto_vj,
+                    value=preset["freeze_ms"] if auto_vj else 150, step=10,
+                    key=f"freeze_ms_{vj_genre}",
                     help="Durata del frame congelato."
                 )
                 freeze_dur = freeze_ms / 1000.0
@@ -566,8 +602,8 @@ def main():
                 freeze_dur = 0.15
 
             if auto_vj:
-                st.caption("_Modalita' automatica attiva: slice, crossfade e freeze "
-                           "sono guidati dalla musica caricata, niente da regolare a mano._")
+                st.caption(f"_Preset {vj_genre} applicato — puoi ritoccare gli slider sopra, "
+                           f"restano comunque a tempo della musica caricata (slice da beat fisso)._")
 
             # default per variabili Decompose non usate in VJ Mode
             r_rand = False; r_a = 0.2; r_b = 1.0
@@ -698,7 +734,8 @@ def main():
                                  f"* Loop Reps: {loop_reps}\n"
                                  f"* Stutter Prob: {int(stutter_prob*100)}%\n"
                                  f"* Pitch Glitch: {pitch_glitch}\n"
-                                 f"* Auto VJ: {auto_vj}\n"
+                                 f"* Auto VJ: {auto_vj}" +
+                                 (f" (preset {vj_genre})" if auto_vj and vj_genre else "") + "\n"
                                  f"* Crossfade: {int(crossfade_dur*1000)}ms\n"
                                  f"* Freeze on beat: {freeze_on_beat}" +
                                  (f" ({int(freeze_prob*100)}% / {int(freeze_dur*1000)}ms)"

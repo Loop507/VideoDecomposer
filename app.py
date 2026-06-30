@@ -85,7 +85,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       stutter_prob, pitch_glitch, p_bar,
                       beat_slice_mode=False, beat_times=None):
     """
-    Remix DJ:
+    VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
     - loop_reps       : quante volte ogni slice viene loopata in modalita' stutter
     - stutter_prob    : probabilita' [0-1] che uno slice sia stutterato
@@ -102,7 +102,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     total_fragments = 0
     curr_t = 0.0
 
-    # Bucket anti-ripetizione per Remix DJ (stesso sistema del VideoEngine)
+    # Bucket anti-ripetizione per VJ Mode (stesso sistema del VideoEngine)
     recent_cuts = {}
 
     def pick_start_dj(source, k, seg):
@@ -176,7 +176,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         total_fragments += 1
         p_bar.progress(
             min(total_fragments / estimated * 0.5, 0.5),
-            text=f"Remix DJ: {total_fragments} slice"
+            text=f"VJ Mode: {total_fragments} slice"
         )
 
     final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
@@ -359,7 +359,7 @@ def main():
         audio_file = st.file_uploader("Audio (mp3/wav)", type=["mp3","wav"])
         st.divider()
         st.subheader("Modalita'")
-        app_mode = st.radio("", ["Decompose", "Remix DJ"], horizontal=True)
+        app_mode = st.radio("", ["Decompose", "VJ Mode"], horizontal=True)
         mix_mode = None
         if app_mode == "Decompose":
             st.subheader("Mix")
@@ -412,7 +412,7 @@ def main():
             slice_dur = 0.25; loop_reps = 2; stutter_prob = 0.4
             pitch_glitch = False; beat_slice_mode = False
         else:
-            st.subheader("Parametri Remix DJ")
+            st.subheader("Parametri VJ Mode")
             slice_options = [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
 
             # Toggle PRIMA dello slider: se attivo, la durata slice viene dal beat
@@ -452,7 +452,7 @@ def main():
                 "Pitch Glitch (speed warp)", value=False,
                 help="Alcuni slice vengono accelerati o rallentati casualmente (x0.5 / x2.0)."
             )
-            # default per variabili Decompose non usate in Remix DJ
+            # default per variabili Decompose non usate in VJ Mode
             r_rand = False; r_a = 0.2; r_b = 1.0
             use_scan = False; s_rand = False; s_a = 10; s_b = 80; scan_dir = "Orizzontale"
 
@@ -477,8 +477,30 @@ def main():
                 index=0
             )
             use_custom_audio = (audio_choice == "Usa la musica caricata")
-        elif app_mode == "Remix DJ" and audio_file:
-            use_custom_audio = st.checkbox("Aggiungi musica caricata al video", value=True)
+        audio_mix_mode = "custom_only"
+        vol_music = 1.0
+        vol_original = 1.0
+        if app_mode == "VJ Mode" and audio_file:
+            audio_mix_choice = st.radio(
+                "Traccia audio nel video finale",
+                ["Solo musica caricata", "Solo audio originale dei video", "Mix (musica + originale)"],
+                index=0,
+                help="Il timing resta sempre quello della musica caricata (loop/trim su durata)."
+            )
+            if audio_mix_choice == "Solo musica caricata":
+                audio_mix_mode = "custom_only"
+                use_custom_audio = True
+            elif audio_mix_choice == "Solo audio originale dei video":
+                audio_mix_mode = "original_only"
+                use_custom_audio = False
+            else:
+                audio_mix_mode = "mix"
+                use_custom_audio = True
+                col_v1, col_v2 = st.columns(2)
+                with col_v1:
+                    vol_music = st.slider("Volume musica caricata", 0, 200, 100, step=5) / 100.0
+                with col_v2:
+                    vol_original = st.slider("Volume audio originale", 0, 200, 100, step=5) / 100.0
 
         st.markdown("---")
 
@@ -502,12 +524,12 @@ def main():
             total_frags   = 0
 
             try:
-                # Analisi audio: Decompose beat sync OPPURE Remix DJ beat slice
+                # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice
                 if app_mode == "Decompose" and beat_sync and audio_file:
                     p_bar.progress(0.05, text="Analisi audio...")
                     beat_times, rms_envelope = analyze_audio(audio_file, durata)
                     beat_count = len(beat_times)
-                elif app_mode == "Remix DJ" and beat_slice_mode and audio_file:
+                elif app_mode == "VJ Mode" and beat_slice_mode and audio_file:
                     p_bar.progress(0.05, text="Analisi beat per slice...")
                     audio_file.seek(0)
                     beat_times, _ = analyze_audio(audio_file, durata)
@@ -547,19 +569,22 @@ def main():
                         beat_slice_mode=beat_slice_mode,
                         beat_times=beat_times
                     )
-                    mode_label = "Remix DJ"
+                    mode_label = "VJ Mode"
                     slice_info = f"beat-driven ({beat_count} beat)" if beat_slice_mode and beat_times else f"{slice_dur}s fisso"
-                    mix_log = (f"Remix DJ — slice {slice_info} / "
+                    mix_log = (f"VJ Mode — slice {slice_info} / "
                                f"loop x{loop_reps} / stutter {int(stutter_prob*100)}%")
                     extra_log = (f"* Slice Mode: {slice_info}\n"
                                  f"* Loop Reps: {loop_reps}\n"
                                  f"* Stutter Prob: {int(stutter_prob*100)}%\n"
-                                 f"* Pitch Glitch: {pitch_glitch}")
+                                 f"* Pitch Glitch: {pitch_glitch}\n"
+                                 f"* Audio Mix: {audio_mix_mode}" +
+                                 (f" (musica {int(vol_music*100)}% / originale {int(vol_original*100)}%)"
+                                  if audio_mix_mode == "mix" else ""))
 
-                # Audio custom
+                # Audio custom / mix
                 if use_custom_audio and audio_file:
-                    from moviepy.editor import AudioFileClip
-                    from moviepy.audio.fx.all import audio_loop
+                    from moviepy.editor import AudioFileClip, CompositeAudioClip
+                    from moviepy.audio.fx.all import audio_loop, volumex
                     audio_file.seek(0)
                     tmp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
                     tmp_audio.write(audio_file.read())
@@ -570,7 +595,16 @@ def main():
                         audio_clip = audio_loop(audio_clip, duration=durata)
                     else:
                         audio_clip = audio_clip.set_duration(durata)
-                    final = final.set_audio(audio_clip)
+
+                    if audio_mix_mode == "mix" and final.audio is not None:
+                        music_track = audio_clip.fx(volumex, vol_music)
+                        original_track = final.audio.set_duration(durata).fx(volumex, vol_original)
+                        mixed = CompositeAudioClip([original_track, music_track]).set_duration(durata)
+                        final = final.set_audio(mixed)
+                    else:
+                        final = final.set_audio(audio_clip)
+                elif audio_mix_mode == "original_only":
+                    pass  # mantiene l'audio originale già presente in final
 
                 out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,9999)}.mp4")
                 p_bar.progress(0.75, text="Scrittura video...")
@@ -590,7 +624,7 @@ def main():
 
                 # Nome condiviso video + report (stesso codice)
                 render_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-                mode_short = "DJ" if app_mode == "Remix DJ" else "DC"
+                mode_short = "VJ" if app_mode == "VJ Mode" else "DC"
                 render_name = f"loop507_{mode_short}_{render_id}"
 
                 st.session_state.video_path   = out_v
@@ -609,7 +643,7 @@ def main():
 * Modalita': {mix_log}
 {extra_log}
 {'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
-{'* Slice Automatico: ON — ' + str(beat_count) + ' beat rilevati' if app_mode == 'Remix DJ' and beat_slice_mode and beat_times else ''}
+{'* Slice Automatico: ON — ' + str(beat_count) + ' beat rilevati' if app_mode == 'VJ Mode' and beat_slice_mode and beat_times else ''}
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
 

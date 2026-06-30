@@ -153,20 +153,35 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
     # Costruisce la lista di durate slice: beat-driven o fissa
     if beat_slice_mode and beat_times and len(beat_times) > 1:
-        # Durate slice = intervalli tra beat consecutivi, ciclati per coprire 'duration'
-        beat_intervals = [beat_times[i+1] - beat_times[i] for i in range(len(beat_times)-1)]
-        # Filtra intervalli anomali (< 0.05s o > 4s)
-        beat_intervals = [d for d in beat_intervals if 0.05 <= d <= 4.0]
-        if not beat_intervals:
-            beat_intervals = [slice_dur]
+        # Punti di taglio ancorati ai beat REALI (timestamp assoluti), non a
+        # intervalli ri-ciclati da t=0 (che desincronizzavano i tagli dalla musica).
+        beat_arr_sorted = sorted(beat_times)
+
+        # Intervallo medio "valido" tra beat consecutivi, usato come fallback
+        # per coprire l'eventuale coda prima del primo beat e dopo l'ultimo.
+        raw_intervals = [beat_arr_sorted[i+1] - beat_arr_sorted[i]
+                          for i in range(len(beat_arr_sorted) - 1)]
+        valid_intervals = [d for d in raw_intervals if 0.05 <= d <= 4.0]
+        avg_interval = (sum(valid_intervals) / len(valid_intervals)) if valid_intervals else slice_dur
+
+        # Cut points = beat reali entro [0, duration], includendo gli estremi.
+        cut_points = [0.0] + [b for b in beat_arr_sorted if 0.0 < b < duration] + [duration]
+        cut_points = sorted(set(cut_points))
+
         slice_schedule = []
-        t = 0.0
-        bi = 0
-        while t < duration:
-            d = beat_intervals[bi % len(beat_intervals)]
-            slice_schedule.append(min(d, duration - t))
-            t += d
-            bi += 1
+        for i in range(len(cut_points) - 1):
+            d = cut_points[i+1] - cut_points[i]
+            if d <= 0:
+                continue
+            if d > 4.0:
+                # Buco troppo grande (es. prima del primo beat, o coda oltre
+                # l'ultimo beat rilevato): lo riempiamo con slice di durata
+                # pari all'intervallo medio reale, cosi' restano "a tempo".
+                n_fill = max(1, round(d / avg_interval))
+                fill_d = d / n_fill
+                slice_schedule.extend([fill_d] * n_fill)
+            else:
+                slice_schedule.append(d)
     else:
         # Slice fissa: costruisce lista uniforme
         n = max(1, int(duration / slice_dur)) + 2

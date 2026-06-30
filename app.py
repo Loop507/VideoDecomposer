@@ -5,6 +5,7 @@ import tempfile
 import time
 import numpy as np
 from datetime import datetime
+import bisect
 from moviepy.editor import VideoFileClip, concatenate_videoclips, ImageClip, CompositeVideoClip
 from PIL import Image
 import librosa
@@ -154,6 +155,13 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     estimated = max(1, len(slice_schedule))
     sched_idx = 0
 
+    # Beat reali ordinati, per ancorare il freeze-frame al tempo della musica
+    # (funziona sia su beat fitti/regolari come la techno sia su beat piu'
+    # radi/irregolari come la musica classica, perche' si basa sui beat
+    # effettivamente rilevati da analyze_audio, non su una probabilita' a caso)
+    beat_arr = sorted(beat_times) if beat_times else []
+    beat_tolerance = max(1.5 / max(fps, 1), 0.05)
+
     while curr_t < duration and sched_idx < len(slice_schedule):
         seg = slice_schedule[sched_idx]
         seg = min(seg, duration - curr_t)
@@ -170,7 +178,23 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             factor = random.choice([0.5, 0.75, 1.5, 2.0])
             base_clip = base_clip.speedx(factor).set_duration(seg)
 
-        if freeze_on_beat and freeze_prob > 0 and random.random() < freeze_prob and seg > 0.15:
+        on_beat = False
+        if freeze_on_beat:
+            if beat_arr:
+                idx = bisect.bisect_left(beat_arr, curr_t)
+                candidates = []
+                if idx < len(beat_arr):
+                    candidates.append(beat_arr[idx])
+                if idx > 0:
+                    candidates.append(beat_arr[idx - 1])
+                if candidates:
+                    nearest = min(candidates, key=lambda b: abs(b - curr_t))
+                    on_beat = abs(nearest - curr_t) <= beat_tolerance
+            else:
+                # nessun beat rilevato: fallback, ogni slice e' candidata
+                on_beat = True
+
+        if freeze_on_beat and on_beat and freeze_prob > 0 and random.random() < freeze_prob and seg > 0.15:
             f_dur = min(freeze_dur, seg * 0.5)
             frame = base_clip.get_frame(0)
             freeze_clip = ImageClip(frame).set_duration(f_dur).set_fps(fps)
@@ -528,7 +552,8 @@ def main():
                 freeze_prob = st.slider(
                     "Probabilita' freeze %", min_value=0, max_value=100,
                     value=25 if auto_vj else 20, disabled=auto_vj,
-                    help="Percentuale di slice in cui scatta il freeze-frame."
+                    help="Percentuale dei beat reali rilevati nell'audio su cui scatta "
+                         "il freeze-frame (ancorato al beat, non casuale)."
                 ) / 100.0
                 freeze_ms = st.slider(
                     "Durata freeze (ms)", min_value=50, max_value=500,
@@ -621,8 +646,8 @@ def main():
                     p_bar.progress(0.05, text="Analisi audio...")
                     beat_times, rms_envelope = analyze_audio(audio_file, durata)
                     beat_count = len(beat_times)
-                elif app_mode == "VJ Mode" and beat_slice_mode and audio_file:
-                    p_bar.progress(0.05, text="Analisi beat per slice...")
+                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat) and audio_file:
+                    p_bar.progress(0.05, text="Analisi beat...")
                     audio_file.seek(0)
                     beat_times, _ = analyze_audio(audio_file, durata)
                     beat_count = len(beat_times)

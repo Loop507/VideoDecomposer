@@ -27,10 +27,33 @@ def analyze_audio(audio_file, duration):
         tmp_path = t.name
     try:
         y, sr = librosa.load(tmp_path, sr=22050, mono=True, duration=duration)
+        actual_dur = (len(y) / sr) if sr else 0.0
+
         _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
+
         rms = librosa.feature.rms(y=y)[0]
         rms_norm = rms / (rms.max() + 1e-6)
+
+        # Se il brano caricato e' piu' corto della durata richiesta, in fase
+        # di rendering viene ripetuto in loop (audio_loop). Beat e RMS qui
+        # venivano invece "stirati" su tutta la durata (np.interp su un
+        # array troppo corto) invece che ripetuti: il risultato erano beat
+        # rilevati solo nel primo tratto e poi piu' nulla, con il video che
+        # perdeva il sync dopo il primo giro del loop audio. Fix: estendiamo
+        # beat_times e rms_norm con lo stesso principio di loop usato per
+        # l'audio vero e proprio, cosi' restano coerenti su tutta la durata.
+        if 0.05 < actual_dur < duration:
+            looped_beats = list(beat_times)
+            offset = actual_dur
+            while offset < duration:
+                looped_beats.extend([b + offset for b in beat_times])
+                offset += actual_dur
+            beat_times = [b for b in looped_beats if b <= duration]
+
+            n_loops = int(np.ceil(duration / actual_dur))
+            rms_norm = np.tile(rms_norm, n_loops)
+
         total_steps = max(1, int(duration / 0.05))
         rms_envelope = np.interp(
             np.linspace(0, len(rms_norm)-1, total_steps),
@@ -123,6 +146,13 @@ MEASURE_FACTORS = {
     "1/1": 1.0, "2": 2.0, "4": 4.0, "8": 8.0, "16": 16.0,
 }
 MEASURE_ORDER = ["1/16", "1/8", "1/6", "1/4", "1/3", "1/2", "1/1", "2", "4", "8", "16"]
+
+AUDIO_MIX_LABELS = {
+    "custom_only": "Solo musica caricata",
+    "custom_decomposed": "Musica decomposta (stessi tagli del video)",
+    "original_only": "Solo audio originale dei video",
+    "mix": "Mix (musica + originale)",
+}
 
 def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       stutter_prob, pitch_glitch, p_bar,
@@ -393,6 +423,11 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         all_clips.append(pclip)
         total_fragments += 1
 
+    # Schema reale dei tagli usati per assemblare il video (durata di ogni
+    # frammento nell'ordine finale, incluse le combo di stutter): serve per
+    # poter "decomporre" l'audio caricato con la stessa identica griglia.
+    cut_schedule = [c.duration for c in all_clips]
+
     if crossfade_dur > 0 and len(all_clips) > 1:
         positioned = []
         t = 0.0
@@ -410,7 +445,62 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         final = CompositeVideoClip(positioned, size=target_size).set_duration(min(t, duration))
     else:
         final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
-    return final, total_fragments
+    return final, total_fragments, cut_schedule
+
+def decompose_audio_track(audio_clip, cut_schedule, total_duration):
+    """
+    Applica al brano caricato la STESSA griglia di tagli usata per assemblare
+    il video (cut_schedule = lista di durate, nello stesso ordine con cui
+    sono stati montati i frammenti video). Per ogni slot pesca un punto
+    casuale nel brano (con bucket anti-ripetizione, stesso principio usato
+    per i video) invece del punto "naturale" in sequenza: il risultato e'
+    il brano rimescolato nella stessa grammatica ritmica del video, cioe'
+    gli slice tagliano anche il brano caricato.
+    """
+    from moviepy.editor import concatenate_audioclips
+
+    if not cut_schedule:
+        return audio_clip.set_duration(total_duration)
+
+    audio_dur = audio_clip.duration
+    if audio_dur is None or audio_dur <= 0.05:
+        return audio_clip.set_duration(total_duration)
+
+    n_buckets = min(40, max(8, int(audio_dur / 0.5)))
+    bucket_counts = [0] * n_buckets
+    bucket_size = audio_dur / n_buckets
+
+    pieces = []
+    elapsed = 0.0
+    for seg in cut_schedule:
+        if elapsed >= total_duration:
+            break
+        seg = min(seg, total_duration - elapsed)
+        if seg < 0.02:
+            break
+
+        max_start = max(0.0, audio_dur - seg)
+        if max_start < 0.01:
+            start = 0.0
+        else:
+            min_v = min(bucket_counts)
+            candidates = [i for i, c in enumerate(bucket_counts) if c == min_v]
+            chosen = random.choice(candidates)
+            b_start = chosen * bucket_size
+            b_end = min(b_start + bucket_size, max_start)
+            start = random.uniform(b_start, max(b_start, b_end))
+            bucket_counts[chosen] += 1
+
+        piece = audio_clip.subclip(start, min(start + seg, audio_dur)).set_duration(seg)
+        pieces.append(piece)
+        elapsed += seg
+
+    if not pieces:
+        return audio_clip.set_duration(total_duration)
+
+    result = concatenate_audioclips(pieces)
+    return result.set_duration(min(elapsed, total_duration))
+
 
 # ---------------------------------------------------------------------------
 # VIDEO ENGINE — Decompose classico
@@ -493,14 +583,34 @@ class VideoEngine:
         recent_cuts = {k: [] for k in keys}
         all_clips = []
 
+        # --- Intervalli beat reali: se disponibili, guidano la durata delle
+        # slice anche in Quote Fisse (prima venivano ignorati del tutto: il
+        # toggle "A tempo di musica" non aveva alcun effetto sui tagli in
+        # questa modalita', solo sulle strisce via rms_envelope). Nota: per
+        # via dello shuffle finale (necessario per distribuire le quote nel
+        # tempo) non e' possibile un ancoraggio assoluto al singolo beat come
+        # in modalita' "Random" — qui i tagli hanno pero' la stessa durata
+        # ritmica dei beat rilevati, quindi il "feel" a tempo resta.
+        beat_intervals = None
+        if beat_times and len(beat_times) > 1:
+            bt = sorted(beat_times)
+            beat_intervals = [bt[i+1] - bt[i] for i in range(len(bt) - 1)]
+            beat_intervals = [d for d in beat_intervals if 0.05 <= d <= 4.0]
+            if not beat_intervals:
+                beat_intervals = None
+
         for k in keys:
             budget = time_budget[k]
             source = self.video_clips[k]
             spent = 0.0
             progress = 0.0
+            b_idx = random.randrange(len(beat_intervals)) if beat_intervals else 0
             while spent < budget:
                 remaining = budget - spent
-                if r_rand:
+                if beat_intervals:
+                    seg_dur = beat_intervals[b_idx % len(beat_intervals)]
+                    b_idx += 1
+                elif r_rand:
                     seg_dur = random.uniform(min(r_a, r_b), max(r_a, r_b))
                 else:
                     seg_dur = r_a + (r_b - r_a) * progress
@@ -942,15 +1052,23 @@ def main():
         vol_music = 1.0
         vol_original = 1.0
         if app_mode == "VJ Mode" and audio_file:
+            audio_choices = ["Solo musica caricata", "Musica decomposta (stessi tagli del video)",
+                              "Solo audio originale dei video", "Mix (musica + originale)"]
             audio_mix_choice = st.radio(
                 "Traccia audio nel video finale",
-                ["Solo musica caricata", "Solo audio originale dei video", "Mix (musica + originale)"],
+                audio_choices,
                 index=0,
                 help="Il timing resta sempre quello della musica caricata (loop/trim su durata)."
             )
             if audio_mix_choice == "Solo musica caricata":
                 audio_mix_mode = "custom_only"
                 use_custom_audio = True
+            elif audio_mix_choice == "Musica decomposta (stessi tagli del video)":
+                audio_mix_mode = "custom_decomposed"
+                use_custom_audio = True
+                st.caption("_Il brano viene tagliato e rimescolato con la stessa griglia "
+                           "ritmica del video: ogni slice video pesca un punto a caso "
+                           "diverso nel brano. Stesso ritmo, contenuto decomposto._")
             elif audio_mix_choice == "Solo audio originale dei video":
                 audio_mix_mode = "original_only"
                 use_custom_audio = False
@@ -983,6 +1101,7 @@ def main():
             engine        = None
             tmp_audio_path = None
             total_frags   = 0
+            cut_schedule  = None
 
             try:
                 # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice
@@ -1024,7 +1143,7 @@ def main():
                                  f"* Strisce: {s_a}px >> {s_b}px (Random: {s_rand})\n"
                                  f"* Geometria: {scan_dir}")
                 else:
-                    final, total_frags = generate_dj_remix(
+                    final, total_frags, cut_schedule = generate_dj_remix(
                         engine.video_clips, durata, fps,
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
                         beat_slice_mode=beat_slice_mode,
@@ -1065,7 +1184,7 @@ def main():
                                  f"* Freeze on beat: {freeze_on_beat}" +
                                  (f" ({int(freeze_prob*100)}% / {int(freeze_dur*1000)}ms)"
                                   if freeze_on_beat else "") + "\n"
-                                 f"* Audio Mix: {audio_mix_mode}" +
+                                 f"* Audio Mix: {AUDIO_MIX_LABELS.get(audio_mix_mode, audio_mix_mode)}" +
                                  (f" (musica {int(vol_music*100)}% / originale {int(vol_original*100)}%)"
                                   if audio_mix_mode == "mix" else ""))
 
@@ -1079,7 +1198,13 @@ def main():
                     tmp_audio.close()
                     tmp_audio_path = tmp_audio.name
                     audio_clip = AudioFileClip(tmp_audio_path)
-                    if audio_clip.duration < durata:
+
+                    if audio_mix_mode == "custom_decomposed":
+                        # Gli slice tagliano anche il brano: stessa griglia
+                        # di tagli del video (cut_schedule), ma pescati a
+                        # caso nel brano invece che in sequenza naturale.
+                        audio_clip = decompose_audio_track(audio_clip, cut_schedule, durata)
+                    elif audio_clip.duration < durata:
                         audio_clip = audio_loop(audio_clip, duration=durata)
                     else:
                         audio_clip = audio_clip.set_duration(durata)

@@ -16,6 +16,34 @@ if hasattr(Image, 'Resampling'):
 else:
     Image.ANTIALIAS = Image.LANCZOS
 
+EXPORT_SIZES = {
+    "16:9 (1280x720)": (1280, 720),
+    "9:16 (720x1280)": (720, 1280),
+    "1:1 (720x720)":   (720, 720),
+}
+
+def fit_to_size(clip, target_size):
+    """
+    Adatta un clip a target_size con crop-to-fill: scala per riempire
+    completamente il formato (nessuna barra nera) poi ritaglia al centro
+    l'eccedenza. Niente deformazione dell'immagine (a differenza del resize
+    "a stiramento" usato prima). Costo quasi nullo: e' lo stesso identico
+    resize che il codice faceva già su ogni frammento, con l'aggiunta di un
+    semplice crop — il peso del render resta sull'encoding ffmpeg finale,
+    non su questo passaggio.
+    """
+    tw, th = target_size
+    cw, ch = clip.size
+    if cw == tw and ch == th:
+        return clip
+    scale = max(tw / cw, th / ch)
+    new_w, new_h = max(1, round(cw * scale)), max(1, round(ch * scale))
+    resized = clip.resize(newsize=(new_w, new_h))
+    x1 = max(0, (new_w - tw) // 2)
+    y1 = max(0, (new_h - th) // 2)
+    return resized.crop(x1=x1, y1=y1, width=tw, height=th)
+
+
 # --- ANALISI AUDIO ---
 def analyze_audio(audio_file, duration):
     orig_name = getattr(audio_file, "name", "") or ""
@@ -164,7 +192,8 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       no_repeat=False,
                       slice_density=1.0,
                       beat_subdivision_mode="fixed", beat_subdivision_factor=1.0,
-                      beat_subdivision_choices=None):
+                      beat_subdivision_choices=None,
+                      export_size=None):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
@@ -194,7 +223,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     nelle zone del sorgente, funziona bene sia su clip corti che su lunghi (50s+).
     """
     keys = list(video_clips.keys())
-    target_size = video_clips[keys[0]].size
+    target_size = export_size or video_clips[keys[0]].size
     all_clips = []
     total_fragments = 0
     curr_t = 0.0
@@ -350,7 +379,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 p_actual = pn / fps
                 p_src = video_clips[pending_k]
                 p_end = min(pending_start + p_actual, p_src.duration)
-                pclip = p_src.subclip(pending_start, p_end).resize(newsize=target_size).set_fps(fps).set_duration(p_actual)
+                pclip = fit_to_size(p_src.subclip(pending_start, p_end), target_size).set_fps(fps).set_duration(p_actual)
                 all_clips.append(pclip)
                 frame_count += pn
                 total_fragments += 1
@@ -360,7 +389,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             k = pick_source_key()
             source = video_clips[k]
             start_p = pick_start_dj(source, k, seg)
-            base_clip = source.subclip(start_p, min(start_p + seg, source.duration)).resize(newsize=target_size).set_fps(fps).set_duration(seg)
+            base_clip = fit_to_size(source.subclip(start_p, min(start_p + seg, source.duration)), target_size).set_fps(fps).set_duration(seg)
 
             if pitch_glitch and random.random() < 0.15:
                 factor = random.choice([0.5, 0.75, 1.5, 2.0])
@@ -420,7 +449,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         pn = max(1, round(pending_seg * fps))
         p_actual = pn / fps
         p_end = min(pending_start + p_actual, p_src.duration)
-        pclip = p_src.subclip(pending_start, p_end).resize(newsize=target_size).set_fps(fps).set_duration(p_actual)
+        pclip = fit_to_size(p_src.subclip(pending_start, p_end), target_size).set_fps(fps).set_duration(p_actual)
         all_clips.append(pclip)
         total_fragments += 1
 
@@ -578,9 +607,9 @@ class VideoEngine:
 
     def generate_fixed_quota(self, quotas, r_a, r_b, r_rand, duration, fps,
                               s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                              beat_times=None, rms_envelope=None):
+                              beat_times=None, rms_envelope=None, export_size=None):
         keys = list(self.video_clips.keys())
-        target_size = self.video_clips[keys[0]].size
+        target_size = export_size or self.video_clips[keys[0]].size
         self.stats["fragments"] = 0
         total_q = sum(quotas.get(k, 0) for k in keys)
         if total_q == 0:
@@ -626,7 +655,7 @@ class VideoEngine:
                 if seg_dur < 0.05:
                     break
                 start_p = self._pick_start(source, k, seg_dur, recent_cuts)
-                clip = source.subclip(start_p, start_p + seg_dur).resize(newsize=target_size).set_fps(fps)
+                clip = fit_to_size(source.subclip(start_p, start_p + seg_dur), target_size).set_fps(fps)
                 all_clips.append(clip)
                 spent += seg_dur
                 progress = spent / budget
@@ -635,20 +664,21 @@ class VideoEngine:
                                text=f"Composizione: {self.stats['fragments']} pezzi")
 
         random.shuffle(all_clips)
+        cut_schedule = [c.duration for c in all_clips]
         final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
         if use_scan:
             _rms = rms_envelope
             final = final.fl(lambda gf, t: apply_procedural_slit_scan(
                 gf, t, final.duration, s_a, s_b, s_rand, scan_dir, _rms))
-        return final
+        return final, cut_schedule
 
     def generate(self, weights, r_a, r_b, r_rand, duration, fps,
                  s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                 beat_times=None, rms_envelope=None):
+                 beat_times=None, rms_envelope=None, export_size=None):
         curr_t = 0
         clips = []
         keys = list(self.video_clips.keys())
-        target_size = self.video_clips[keys[0]].size
+        target_size = export_size or self.video_clips[keys[0]].size
         self.stats["fragments"] = 0
         beat_idx = 0
         recent_cuts = {k: [] for k in keys}
@@ -673,19 +703,20 @@ class VideoEngine:
             source = self.video_clips[v_idx]
 
             start_p = self._pick_start(source, v_idx, seg_dur, recent_cuts)
-            clip = source.subclip(start_p, start_p + seg_dur).resize(newsize=target_size).set_fps(fps)
+            clip = fit_to_size(source.subclip(start_p, start_p + seg_dur), target_size).set_fps(fps)
             clips.append(clip)
             curr_t += seg_dur
             self.stats["fragments"] += 1
             p_bar.progress(min(curr_t / duration * 0.4, 0.4),
                            text=f"Composizione: {self.stats['fragments']} pezzi")
 
+        cut_schedule = [c.duration for c in clips]
         final = concatenate_videoclips(clips, method="chain").set_duration(duration)
         if use_scan:
             _rms = rms_envelope
             final = final.fl(lambda gf, t: apply_procedural_slit_scan(
                 gf, t, final.duration, s_a, s_b, s_rand, scan_dir, _rms))
-        return final
+        return final, cut_schedule
 
 
 # ---------------------------------------------------------------------------
@@ -1039,6 +1070,14 @@ def main():
         st.subheader("Esportazione")
         durata = st.number_input("Durata Totale (s)", 5, 300, 15)
         fps    = st.selectbox("FPS", [24, 30])
+        formato_label = st.selectbox(
+            "Formato",
+            ["Originale", "16:9 (1280x720)", "9:16 (720x1280)", "1:1 (720x720)"],
+            help="Originale = usa la risoluzione del primo video caricato (V1), come sempre. "
+                 "Gli altri formati fanno crop-to-fill: scalano e ritagliano al centro, senza "
+                 "deformare l'immagine e senza barre nere."
+        )
+        export_size = EXPORT_SIZES.get(formato_label)
         st.markdown("---")
 
         if app_mode == "Decompose":
@@ -1049,17 +1088,10 @@ def main():
             st.caption("_Beat sync disponibile in modalita' Decompose._")
 
         use_custom_audio = False
-        if app_mode == "Decompose" and beat_sync and audio_file:
-            audio_choice = st.radio(
-                "Traccia audio nel video finale",
-                ["Audio originale dei video", "Usa la musica caricata"],
-                index=0
-            )
-            use_custom_audio = (audio_choice == "Usa la musica caricata")
         audio_mix_mode = "custom_only"
         vol_music = 1.0
         vol_original = 1.0
-        if app_mode == "VJ Mode" and audio_file:
+        if audio_file:
             audio_choices = ["Solo musica caricata", "Musica decomposta (stessi tagli del video)",
                               "Solo audio originale dei video", "Mix (musica + originale)",
                               "Mix decomposto (musica decomposta + originale)"]
@@ -1140,16 +1172,18 @@ def main():
 
                 if app_mode == "Decompose":
                     if mix_mode == "Quote Fisse":
-                        final = engine.generate_fixed_quota(
+                        final, cut_schedule = engine.generate_fixed_quota(
                             quotas, r_a, r_b, r_rand, durata, fps,
                             s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                            beat_times=beat_times, rms_envelope=rms_envelope
+                            beat_times=beat_times, rms_envelope=rms_envelope,
+                            export_size=export_size
                         )
                     else:
-                        final = engine.generate(
+                        final, cut_schedule = engine.generate(
                             weights, r_a, r_b, r_rand, durata, fps,
                             s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                            beat_times=beat_times, rms_envelope=rms_envelope
+                            beat_times=beat_times, rms_envelope=rms_envelope,
+                            export_size=export_size
                         )
                     total_frags = engine.stats["fragments"]
                     mode_label = "Decompose"
@@ -1160,7 +1194,8 @@ def main():
                         mix_log = "Random (pesi Start%/End%)"
                     extra_log = (f"* Ritmo: {r_a}s >> {r_b}s (Random: {r_rand})\n"
                                  f"* Strisce: {s_a}px >> {s_b}px (Random: {s_rand})\n"
-                                 f"* Geometria: {scan_dir}")
+                                 f"* Geometria: {scan_dir}\n"
+                                 f"* Formato: {formato_label}")
                 else:
                     final, total_frags, cut_schedule = generate_dj_remix(
                         engine.video_clips, durata, fps,
@@ -1177,7 +1212,8 @@ def main():
                         slice_density=slice_density,
                         beat_subdivision_mode=beat_subdivision_mode,
                         beat_subdivision_factor=beat_subdivision_factor,
-                        beat_subdivision_choices=beat_subdivision_choices
+                        beat_subdivision_choices=beat_subdivision_choices,
+                        export_size=export_size
                     )
                     mode_label = "VJ Mode"
                     if beat_slice_mode and beat_times:
@@ -1205,7 +1241,8 @@ def main():
                                   if freeze_on_beat else "") + "\n"
                                  f"* Audio Mix: {AUDIO_MIX_LABELS.get(audio_mix_mode, audio_mix_mode)}" +
                                  (f" (musica {int(vol_music*100)}% / originale {int(vol_original*100)}%)"
-                                  if audio_mix_mode in ("mix", "mix_decomposed") else ""))
+                                  if audio_mix_mode in ("mix", "mix_decomposed") else "") + "\n"
+                                 f"* Formato: {formato_label}")
 
                 # Audio custom / mix
                 if use_custom_audio and audio_file:

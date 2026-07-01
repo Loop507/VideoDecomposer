@@ -378,12 +378,29 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 pn = max(1, round(pending_seg * fps))
                 p_actual = pn / fps
                 p_src = video_clips[pending_k]
-                p_end = min(pending_start + p_actual, p_src.duration)
-                pclip = fit_to_size(p_src.subclip(pending_start, p_end), target_size).set_fps(fps).set_duration(p_actual)
-                all_clips.append(pclip)
-                frame_count += pn
-                total_fragments += 1
-                pending_seg = 0.0
+                # Guardia: se pending_start e' già oltre (o troppo vicino a)
+                # la fine del file sorgente non c'e' footage da prendere,
+                # meglio scartare il pending che tentare un subclip invalido.
+                if pending_start >= p_src.duration - (1.0 / fps):
+                    pending_seg = 0.0
+                else:
+                    p_end = min(pending_start + p_actual, p_src.duration)
+                    # Clamp di sicurezza: se il buffer accumulato (pending_seg)
+                    # richiederebbe piu' footage di quanto ne resti davvero nella
+                    # sorgente da pending_start in poi, p_end viene tagliato da
+                    # min() ma prima qui si forzava comunque set_duration(p_actual)
+                    # con p_actual NON aggiornato: il clip dichiarava una durata
+                    # maggiore del footage realmente disponibile, e moviepy andava
+                    # in errore "Accessing time t=... with clip duration=..." in
+                    # fase di scrittura. Ora ricalcoliamo p_actual/pn sulla durata
+                    # effettivamente disponibile dopo il clamp.
+                    p_actual = max(1.0 / fps, p_end - pending_start)
+                    pn = max(1, round(p_actual * fps))
+                    pclip = fit_to_size(p_src.subclip(pending_start, p_end), target_size).set_fps(fps).set_duration(p_actual)
+                    all_clips.append(pclip)
+                    frame_count += pn
+                    total_fragments += 1
+                    pending_seg = 0.0
 
             # Nuovo taglio
             k = pick_source_key()
@@ -446,12 +463,19 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     # Scarica eventuale pending residuo a fine schedule
     if pending_k is not None and pending_seg >= 0.02:
         p_src = video_clips[pending_k]
-        pn = max(1, round(pending_seg * fps))
-        p_actual = pn / fps
-        p_end = min(pending_start + p_actual, p_src.duration)
-        pclip = fit_to_size(p_src.subclip(pending_start, p_end), target_size).set_fps(fps).set_duration(p_actual)
-        all_clips.append(pclip)
-        total_fragments += 1
+        if pending_start >= p_src.duration - (1.0 / fps):
+            pass  # niente footage residuo da prendere
+        else:
+            pn = max(1, round(pending_seg * fps))
+            p_actual = pn / fps
+            p_end = min(pending_start + p_actual, p_src.duration)
+            # Stesso fix del flush precedente: ricalcolo p_actual sulla durata
+            # realmente disponibile dopo il clamp, per non dichiarare un
+            # set_duration maggiore del footage esistente nella sorgente.
+            p_actual = max(1.0 / fps, p_end - pending_start)
+            pclip = fit_to_size(p_src.subclip(pending_start, p_end), target_size).set_fps(fps).set_duration(p_actual)
+            all_clips.append(pclip)
+            total_fragments += 1
 
     # Schema reale dei tagli usati per assemblare il video (durata di ogni
     # frammento nell'ordine finale, incluse le combo di stutter): serve per

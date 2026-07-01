@@ -152,6 +152,7 @@ AUDIO_MIX_LABELS = {
     "custom_decomposed": "Musica decomposta (stessi tagli del video)",
     "original_only": "Solo audio originale dei video",
     "mix": "Mix (musica + originale)",
+    "mix_decomposed": "Mix decomposto (musica decomposta + originale)",
 }
 
 def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
@@ -487,8 +488,15 @@ def decompose_audio_track(audio_clip, cut_schedule, total_duration):
             candidates = [i for i, c in enumerate(bucket_counts) if c == min_v]
             chosen = random.choice(candidates)
             b_start = chosen * bucket_size
-            b_end = min(b_start + bucket_size, max_start)
+            b_end = min(b_start + bucket_size, audio_dur)
             start = random.uniform(b_start, max(b_start, b_end))
+            # Clamp di sicurezza: i bucket sono ritagliati sulla durata TOTALE
+            # del brano, ma il punto di partenza valido per questo segmento
+            # e' al massimo max_start (altrimenti start+seg supera la durata
+            # del file e moviepy va in errore "Accessing time t=... with clip
+            # duration=..."). Senza questo clamp, bucket vicini alla fine del
+            # brano potevano restituire start > max_start.
+            start = min(start, max_start)
             bucket_counts[chosen] += 1
 
         piece = audio_clip.subclip(start, min(start + seg, audio_dur)).set_duration(seg)
@@ -1053,7 +1061,8 @@ def main():
         vol_original = 1.0
         if app_mode == "VJ Mode" and audio_file:
             audio_choices = ["Solo musica caricata", "Musica decomposta (stessi tagli del video)",
-                              "Solo audio originale dei video", "Mix (musica + originale)"]
+                              "Solo audio originale dei video", "Mix (musica + originale)",
+                              "Mix decomposto (musica decomposta + originale)"]
             audio_mix_choice = st.radio(
                 "Traccia audio nel video finale",
                 audio_choices,
@@ -1072,6 +1081,16 @@ def main():
             elif audio_mix_choice == "Solo audio originale dei video":
                 audio_mix_mode = "original_only"
                 use_custom_audio = False
+            elif audio_mix_choice == "Mix decomposto (musica decomposta + originale)":
+                audio_mix_mode = "mix_decomposed"
+                use_custom_audio = True
+                st.caption("_Come 'Musica decomposta', ma mixata con l'audio originale "
+                           "dei video invece di sostituirlo._")
+                col_v1, col_v2 = st.columns(2)
+                with col_v1:
+                    vol_music = st.slider("Volume musica decomposta", 0, 200, 100, step=5) / 100.0
+                with col_v2:
+                    vol_original = st.slider("Volume audio originale", 0, 200, 100, step=5) / 100.0
             else:
                 audio_mix_mode = "mix"
                 use_custom_audio = True
@@ -1186,7 +1205,7 @@ def main():
                                   if freeze_on_beat else "") + "\n"
                                  f"* Audio Mix: {AUDIO_MIX_LABELS.get(audio_mix_mode, audio_mix_mode)}" +
                                  (f" (musica {int(vol_music*100)}% / originale {int(vol_original*100)}%)"
-                                  if audio_mix_mode == "mix" else ""))
+                                  if audio_mix_mode in ("mix", "mix_decomposed") else ""))
 
                 # Audio custom / mix
                 if use_custom_audio and audio_file:
@@ -1199,7 +1218,7 @@ def main():
                     tmp_audio_path = tmp_audio.name
                     audio_clip = AudioFileClip(tmp_audio_path)
 
-                    if audio_mix_mode == "custom_decomposed":
+                    if audio_mix_mode in ("custom_decomposed", "mix_decomposed"):
                         # Gli slice tagliano anche il brano: stessa griglia
                         # di tagli del video (cut_schedule), ma pescati a
                         # caso nel brano invece che in sequenza naturale.
@@ -1209,7 +1228,7 @@ def main():
                     else:
                         audio_clip = audio_clip.set_duration(durata)
 
-                    if audio_mix_mode == "mix" and final.audio is not None:
+                    if audio_mix_mode in ("mix", "mix_decomposed") and final.audio is not None:
                         music_track = audio_clip.fx(volumex, vol_music)
                         original_track = final.audio.set_duration(durata).fx(volumex, vol_original)
                         mixed = CompositeAudioClip([original_track, music_track]).set_duration(durata)

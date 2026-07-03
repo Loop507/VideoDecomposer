@@ -341,6 +341,19 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             seg = rms_envelope[i0:i1 + 1] or [rms_envelope[i0]]
             return sum(seg) / len(seg)
 
+        # Media di una banda (low/mid/high) su un intervallo [t0, t1).
+        # 0.0 se band_envelope non e' disponibile.
+        def _avg_band(t0, t1, band_name):
+            if not band_envelope:
+                return 0.0
+            arr = band_envelope.get(band_name)
+            if not arr:
+                return 0.0
+            i0 = min(int(t0 / 0.05), len(arr) - 1)
+            i1 = min(max(i0, int(t1 / 0.05)), len(arr) - 1)
+            seg = arr[i0:i1 + 1] or [arr[i0]]
+            return sum(seg) / len(seg)
+
         QUIET_ENERGY_THRESH = 0.15
 
         # --- Segmenti base: un elemento per ogni intervallo beat-to-beat ---
@@ -387,6 +400,9 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
         slice_schedule = []
         i = 0
+        abs_t = 0.0  # tempo assoluto di inizio del base_segment corrente
+        BURST_THRESH = 0.55   # soglia di accento oltre la quale forziamo un taglio fine
+        BURST_FACTOR = 0.25   # misura forzata durante un accento (1/4 di beat)
         while i < len(base_segments):
             if beat_subdivision_mode == "fixed":
                 sv = beat_subdivision_factor
@@ -395,6 +411,33 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             else:  # random_subset
                 sv = random.choice(choices_pool)
 
+            # Override reattivo: prima di applicare la misura scelta (o quella
+            # del preset), guardiamo se in QUESTO punto del brano c'e' un
+            # accento forte su medi/alti (tom, snare, raffica di hi-hat).
+            # Senza questo, un fill veloce dentro un brano piu' lento viene
+            # comunque tagliato alla stessa cadenza fissa di tutto il resto
+            # — la misura scelta non ha mai modo di "sapere" cosa succede
+            # davvero nell'audio in quel preciso istante.
+            # Importante: se sv raggruppa piu' beat (sv >= 1.0), un burst
+            # breve nascosto in UN beat del gruppo si annacqua se mediamo
+            # l'accento sull'intero intervallo del gruppo (2s di media
+            # spengono un picco di 0.2s). Guardiamo quindi il picco per
+            # singolo beat dentro il gruppo, non la media sul gruppo intero.
+            if sv >= 1.0:
+                n_candidate = max(1, round(sv))
+                t_cursor = abs_t
+                accent_here = 0.0
+                for d in base_segments[i:i + n_candidate]:
+                    a = 0.6 * _avg_band(t_cursor, t_cursor + d, "high") \
+                      + 0.4 * _avg_band(t_cursor, t_cursor + d, "mid")
+                    accent_here = max(accent_here, a)
+                    t_cursor += d
+            else:
+                accent_here = 0.6 * _avg_band(abs_t, abs_t + base_segments[i], "high") \
+                            + 0.4 * _avg_band(abs_t, abs_t + base_segments[i], "mid")
+            if band_envelope and accent_here > BURST_THRESH and sv > BURST_FACTOR:
+                sv = BURST_FACTOR
+
             if sv >= 1.0:
                 # Raggruppa: somma sv segmenti consecutivi in uno solo
                 n = max(1, round(sv))
@@ -402,6 +445,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 total = sum(group)
                 if total >= 0.04:
                     slice_schedule.append(total)
+                abs_t += total
                 i += n
             else:
                 # Suddividi: spezza il segmento corrente in 1/sv parti uguali
@@ -411,6 +455,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                     slice_schedule.extend([piece] * n)
                 else:
                     slice_schedule.append(base_segments[i])
+                abs_t += base_segments[i]
                 i += 1
     else:
         # Slice fissa: costruisce lista uniforme
@@ -981,18 +1026,23 @@ def main():
             if audio_file is None:
                 st.caption("_Carica un audio nella sidebar per attivare la modalita' automatica._")
 
-            # Preset per genere musicale — valori tarati su stutter/loop/crossfade/freeze
+            # Preset per genere musicale — valori tarati su stutter/loop/crossfade/freeze.
+            # "subdiv" e' la misura beat di base (in unita' MEASURE_FACTORS) usata in
+            # automatico: prima non esisteva, e il default generico (bpm_to_default_
+            # subdivision) raggruppava 4 beat per slice per QUALSIASI genere a tempo
+            # medio/alto — quindi "Techno" tagliava alla stessa grana lenta di
+            # "Ambient", niente affatto reattivo.
             VJ_PRESETS = {
                 "Techno":   dict(loop_reps=3, stutter_prob=0.50, pitch_glitch=False,
-                                  crossfade_ms=40,  freeze_prob=0.35, freeze_ms=100),
+                                  crossfade_ms=40,  freeze_prob=0.35, freeze_ms=100, subdiv=0.5),
                 "House":    dict(loop_reps=2, stutter_prob=0.30, pitch_glitch=False,
-                                  crossfade_ms=100, freeze_prob=0.20, freeze_ms=150),
+                                  crossfade_ms=100, freeze_prob=0.20, freeze_ms=150, subdiv=1.0),
                 "Ambient":  dict(loop_reps=1, stutter_prob=0.10, pitch_glitch=False,
-                                  crossfade_ms=250, freeze_prob=0.10, freeze_ms=300),
+                                  crossfade_ms=250, freeze_prob=0.10, freeze_ms=300, subdiv=2.0),
                 "Pop":      dict(loop_reps=2, stutter_prob=0.25, pitch_glitch=False,
-                                  crossfade_ms=80,  freeze_prob=0.20, freeze_ms=150),
+                                  crossfade_ms=80,  freeze_prob=0.20, freeze_ms=150, subdiv=1.0),
                 "Classica": dict(loop_reps=1, stutter_prob=0.05, pitch_glitch=False,
-                                  crossfade_ms=300, freeze_prob=0.08, freeze_ms=250),
+                                  crossfade_ms=300, freeze_prob=0.08, freeze_ms=250, subdiv=4.0),
             }
             if auto_vj:
                 vj_genre = st.selectbox(
@@ -1002,11 +1052,13 @@ def main():
                     help="Tara crossfade, freeze, stutter e loop sul genere del brano caricato."
                 )
                 preset = VJ_PRESETS[vj_genre]
+                _subdiv_cap = next((m for m, v in MEASURE_FACTORS.items() if abs(v - preset["subdiv"]) < 1e-9), str(preset["subdiv"]))
                 st.caption(
                     f"_Preset {vj_genre}: loop x{preset['loop_reps']} · "
                     f"stutter {int(preset['stutter_prob']*100)}% · "
                     f"crossfade {preset['crossfade_ms']}ms · "
-                    f"freeze {int(preset['freeze_prob']*100)}%/{preset['freeze_ms']}ms_"
+                    f"freeze {int(preset['freeze_prob']*100)}%/{preset['freeze_ms']}ms · "
+                    f"subdiv {_subdiv_cap}_"
                 )
             else:
                 vj_genre = None
@@ -1043,92 +1095,101 @@ def main():
                 slice_dur = 0.25  # valore di fallback, non usato
                 st.caption("_Durata slice determinata dai beat dell'audio._")
 
-                # --- Subdivisione Beat ---
-                st.markdown("**Subdivisione beat**")
-                subdiv_mode_label = st.radio(
-                    "Modalita'",
-                    ["Fissa", "Random totale", "Random in range"],
-                    horizontal=True,
-                    key="subdiv_mode_radio",
-                    help=(
-                        "Fissa: tutti gli slice usano la stessa misura. "
-                        "Random totale: ogni slice pesca una misura a caso tra tutte. "
-                        "Random in range: ogni slice pesca tra le misure nel range scelto."
-                    )
-                )
-
-                if subdiv_mode_label == "Fissa":
+                if auto_vj:
+                    # Automatico: la grana del taglio viene dal preset di genere,
+                    # non dai controlli manuali (che restano nascosti per coerenza
+                    # con "automatico" — vedi VJ_PRESETS[genere]["subdiv"]).
                     beat_subdivision_mode = "fixed"
-                    # Auto-adatta il default al BPM rilevato
-                    _auto_subdiv = bpm_to_default_subdivision(
-                        st.session_state.get("detected_bpm")
-                    )
-                    subdiv_sel = st.selectbox(
-                        "Misura",
-                        MEASURE_ORDER,
-                        index=MEASURE_ORDER.index(_auto_subdiv),
-                        key="subdiv_fixed_sel",
-                        help="< 1/1 = taglia il beat in frazioni (stutter/roll) | > 1 = raggruppa piu' beat per slice. Il default si adatta automaticamente al BPM rilevato."
-                    )
-                    beat_subdivision_factor = MEASURE_FACTORS[subdiv_sel]
+                    beat_subdivision_factor = preset["subdiv"]
                     beat_subdivision_choices = None
-                    if beat_subdivision_factor < 1.0:
-                        desc = f"frazionato x{round(1/beat_subdivision_factor)}"
-                    else:
-                        desc = f"{round(beat_subdivision_factor)} beat per slice"
-                    _bpm_note = f" · auto da {st.session_state['detected_bpm']:.1f} bpm" if st.session_state.get("detected_bpm") else ""
-                    st.caption(f"_Slice = {subdiv_sel} beat — {desc}{_bpm_note}_")
-
-                elif subdiv_mode_label == "Random totale":
-                    beat_subdivision_mode = "random_total"
-                    beat_subdivision_factor = 1.0
-                    beat_subdivision_choices = None
-                    st.caption("_Ogni slice riceve una misura casuale tra 1/16 e 16 beat._")
-
-                else:  # Random in range
-                    beat_subdivision_mode = "random_subset"
-                    beat_subdivision_factor = 1.0
-                    col_ra, col_rb = st.columns(2)
-                    with col_ra:
-                        range_min_label = st.selectbox(
-                            "Min", MEASURE_ORDER,
-                            index=MEASURE_ORDER.index("1/4"),
-                            key="subdiv_range_min"
+                    slice_density = 1.0
+                else:
+                    # --- Subdivisione Beat ---
+                    st.markdown("**Subdivisione beat**")
+                    subdiv_mode_label = st.radio(
+                        "Modalita'",
+                        ["Fissa", "Random totale", "Random in range"],
+                        horizontal=True,
+                        key="subdiv_mode_radio",
+                        help=(
+                            "Fissa: tutti gli slice usano la stessa misura. "
+                            "Random totale: ogni slice pesca una misura a caso tra tutte. "
+                            "Random in range: ogni slice pesca tra le misure nel range scelto."
                         )
-                    with col_rb:
-                        range_max_label = st.selectbox(
-                            "Max", MEASURE_ORDER,
-                            index=MEASURE_ORDER.index("4"),
-                            key="subdiv_range_max"
-                        )
-                    min_f = MEASURE_FACTORS[range_min_label]
-                    max_f = MEASURE_FACTORS[range_max_label]
-                    if min_f > max_f:
-                        min_f, max_f = max_f, min_f
-                    beat_subdivision_choices = [
-                        MEASURE_FACTORS[m] for m in MEASURE_ORDER
-                        if min_f <= MEASURE_FACTORS[m] <= max_f
-                    ]
-                    if not beat_subdivision_choices:
-                        beat_subdivision_choices = [1.0]
-                    labels_in_range = [m for m in MEASURE_ORDER if min_f <= MEASURE_FACTORS[m] <= max_f]
-                    st.caption(f"_Random tra: {', '.join(labels_in_range)}_")
-
-                # --- Densità slice ---
-                st.markdown("**Densita' slice**")
-                slice_density_pct = st.slider(
-                    "% beat che generano un taglio",
-                    min_value=10, max_value=100, value=100, step=5,
-                    key="slice_density_slider",
-                    help=(
-                        "100% = ogni beat genera un nuovo taglio (comportamento classico). "
-                        "Valori inferiori lasciano 'respirare' il video: alcuni beat passano "
-                        "senza cambiare sorgente, creando fraseggi piu' lunghi."
                     )
-                )
-                slice_density = slice_density_pct / 100.0
-                if slice_density_pct < 100:
-                    st.caption(f"_Solo il {slice_density_pct}% dei beat genera un taglio — il resto continua sulla stessa sorgente._")
+
+                    if subdiv_mode_label == "Fissa":
+                        beat_subdivision_mode = "fixed"
+                        # Auto-adatta il default al BPM rilevato
+                        _auto_subdiv = bpm_to_default_subdivision(
+                            st.session_state.get("detected_bpm")
+                        )
+                        subdiv_sel = st.selectbox(
+                            "Misura",
+                            MEASURE_ORDER,
+                            index=MEASURE_ORDER.index(_auto_subdiv),
+                            key="subdiv_fixed_sel",
+                            help="< 1/1 = taglia il beat in frazioni (stutter/roll) | > 1 = raggruppa piu' beat per slice. Il default si adatta automaticamente al BPM rilevato."
+                        )
+                        beat_subdivision_factor = MEASURE_FACTORS[subdiv_sel]
+                        beat_subdivision_choices = None
+                        if beat_subdivision_factor < 1.0:
+                            desc = f"frazionato x{round(1/beat_subdivision_factor)}"
+                        else:
+                            desc = f"{round(beat_subdivision_factor)} beat per slice"
+                        _bpm_note = f" · auto da {st.session_state['detected_bpm']:.1f} bpm" if st.session_state.get("detected_bpm") else ""
+                        st.caption(f"_Slice = {subdiv_sel} beat — {desc}{_bpm_note}_")
+
+                    elif subdiv_mode_label == "Random totale":
+                        beat_subdivision_mode = "random_total"
+                        beat_subdivision_factor = 1.0
+                        beat_subdivision_choices = None
+                        st.caption("_Ogni slice riceve una misura casuale tra 1/16 e 16 beat._")
+
+                    else:  # Random in range
+                        beat_subdivision_mode = "random_subset"
+                        beat_subdivision_factor = 1.0
+                        col_ra, col_rb = st.columns(2)
+                        with col_ra:
+                            range_min_label = st.selectbox(
+                                "Min", MEASURE_ORDER,
+                                index=MEASURE_ORDER.index("1/4"),
+                                key="subdiv_range_min"
+                            )
+                        with col_rb:
+                            range_max_label = st.selectbox(
+                                "Max", MEASURE_ORDER,
+                                index=MEASURE_ORDER.index("4"),
+                                key="subdiv_range_max"
+                            )
+                        min_f = MEASURE_FACTORS[range_min_label]
+                        max_f = MEASURE_FACTORS[range_max_label]
+                        if min_f > max_f:
+                            min_f, max_f = max_f, min_f
+                        beat_subdivision_choices = [
+                            MEASURE_FACTORS[m] for m in MEASURE_ORDER
+                            if min_f <= MEASURE_FACTORS[m] <= max_f
+                        ]
+                        if not beat_subdivision_choices:
+                            beat_subdivision_choices = [1.0]
+                        labels_in_range = [m for m in MEASURE_ORDER if min_f <= MEASURE_FACTORS[m] <= max_f]
+                        st.caption(f"_Random tra: {', '.join(labels_in_range)}_")
+
+                    # --- Densità slice ---
+                    st.markdown("**Densita' slice**")
+                    slice_density_pct = st.slider(
+                        "% beat che generano un taglio",
+                        min_value=10, max_value=100, value=100, step=5,
+                        key="slice_density_slider",
+                        help=(
+                            "100% = ogni beat genera un nuovo taglio (comportamento classico). "
+                            "Valori inferiori lasciano 'respirare' il video: alcuni beat passano "
+                            "senza cambiare sorgente, creando fraseggi piu' lunghi."
+                        )
+                    )
+                    slice_density = slice_density_pct / 100.0
+                    if slice_density_pct < 100:
+                        st.caption(f"_Solo il {slice_density_pct}% dei beat genera un taglio — il resto continua sulla stessa sorgente._")
 
             st.markdown("---")
             loop_reps = st.slider(

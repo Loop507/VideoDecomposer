@@ -84,12 +84,25 @@ def analyze_audio(audio_file, duration):
         mid_norm  = _band(150, 2000)
         high_norm = _band(2000, 8000)
 
+        # --- Energia "melodica/vocale" ---
+        # Le bande di frequenza sopra mescolano percussivo e armonico: un
+        # hi-hat e una voce acuta vivono nella stessa banda "high", e per il
+        # taglio non sono la stessa cosa (un hi-hat deve tagliare fitto, una
+        # voce che sale no). Con HPSS separiamo la componente armonica
+        # (melodia, voce, pad) da quella percussiva (batteria) e misuriamo
+        # l'energia della sola parte armonica: cosi' il motore puo' distinguere
+        # "sta suonando la batteria" da "sta cantando/suonando una melodia".
+        y_harm, _y_perc = librosa.effects.hpss(y)
+        harm_rms = librosa.feature.rms(y=y_harm)[0]
+        melody_norm = harm_rms / (harm_rms.max() + 1e-6)
+
         # Allinea le lunghezze (STFT e RMS possono differire di 1 frame)
-        n_common = min(len(rms_norm), len(low_norm), len(mid_norm), len(high_norm))
-        rms_norm  = rms_norm[:n_common]
-        low_norm  = low_norm[:n_common]
-        mid_norm  = mid_norm[:n_common]
-        high_norm = high_norm[:n_common]
+        n_common = min(len(rms_norm), len(low_norm), len(mid_norm), len(high_norm), len(melody_norm))
+        rms_norm    = rms_norm[:n_common]
+        low_norm    = low_norm[:n_common]
+        mid_norm    = mid_norm[:n_common]
+        high_norm   = high_norm[:n_common]
+        melody_norm = melody_norm[:n_common]
 
         # Se il brano caricato e' piu' corto della durata richiesta, in fase
         # di rendering viene ripetuto in loop (audio_loop). Beat e RMS qui
@@ -109,10 +122,11 @@ def analyze_audio(audio_file, duration):
             beat_times = [b for b in looped_beats if b <= duration]
 
             n_loops = int(np.ceil(duration / actual_dur))
-            rms_norm  = np.tile(rms_norm, n_loops)
-            low_norm  = np.tile(low_norm, n_loops)
-            mid_norm  = np.tile(mid_norm, n_loops)
-            high_norm = np.tile(high_norm, n_loops)
+            rms_norm    = np.tile(rms_norm, n_loops)
+            low_norm    = np.tile(low_norm, n_loops)
+            mid_norm    = np.tile(mid_norm, n_loops)
+            high_norm   = np.tile(high_norm, n_loops)
+            melody_norm = np.tile(melody_norm, n_loops)
 
         total_steps = max(1, int(duration / 0.05))
 
@@ -124,9 +138,10 @@ def analyze_audio(audio_file, duration):
 
         rms_envelope = _to_envelope(rms_norm)
         band_envelope = {
-            "low":  _to_envelope(low_norm),
-            "mid":  _to_envelope(mid_norm),
-            "high": _to_envelope(high_norm),
+            "low":    _to_envelope(low_norm),
+            "mid":    _to_envelope(mid_norm),
+            "high":   _to_envelope(high_norm),
+            "melody": _to_envelope(melody_norm),
         }
     finally:
         os.remove(tmp_path)
@@ -354,6 +369,16 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             seg = arr[i0:i1 + 1] or [arr[i0]]
             return sum(seg) / len(seg)
 
+        # "Intensita' ritmica" su un intervallo: energia percussiva (medi/alti)
+        # al netto della componente melodica/vocale. Senza sottrarre la
+        # melodia, una voce acuta o un lead che sale attiverebbe la stessa
+        # reazione di un tom o un hi-hat — qui distinguiamo "sta suonando la
+        # batteria" da "sta cantando/suonando una melodia".
+        def _rhythmic_intensity_range(t0, t1):
+            perc = 0.6 * _avg_band(t0, t1, "high") + 0.4 * _avg_band(t0, t1, "mid")
+            mel = _avg_band(t0, t1, "melody")
+            return max(0.0, min(1.0, perc - 0.35 * mel))
+
         QUIET_ENERGY_THRESH = 0.15
 
         # --- Segmenti base: un elemento per ogni intervallo beat-to-beat ---
@@ -413,14 +438,16 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
             # Override reattivo: prima di applicare la misura scelta (o quella
             # del preset), guardiamo se in QUESTO punto del brano c'e' un
-            # accento forte su medi/alti (tom, snare, raffica di hi-hat).
+            # accento percussivo forte (tom, snare, raffica di hi-hat), al
+            # netto della componente melodica/vocale — cosi' una voce acuta
+            # o un lead che sale non vengono scambiati per una batteria.
             # Senza questo, un fill veloce dentro un brano piu' lento viene
             # comunque tagliato alla stessa cadenza fissa di tutto il resto
             # — la misura scelta non ha mai modo di "sapere" cosa succede
             # davvero nell'audio in quel preciso istante.
             # Importante: se sv raggruppa piu' beat (sv >= 1.0), un burst
             # breve nascosto in UN beat del gruppo si annacqua se mediamo
-            # l'accento sull'intero intervallo del gruppo (2s di media
+            # l'intensita' sull'intero intervallo del gruppo (2s di media
             # spengono un picco di 0.2s). Guardiamo quindi il picco per
             # singolo beat dentro il gruppo, non la media sul gruppo intero.
             if sv >= 1.0:
@@ -428,13 +455,11 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 t_cursor = abs_t
                 accent_here = 0.0
                 for d in base_segments[i:i + n_candidate]:
-                    a = 0.6 * _avg_band(t_cursor, t_cursor + d, "high") \
-                      + 0.4 * _avg_band(t_cursor, t_cursor + d, "mid")
+                    a = _rhythmic_intensity_range(t_cursor, t_cursor + d)
                     accent_here = max(accent_here, a)
                     t_cursor += d
             else:
-                accent_here = 0.6 * _avg_band(abs_t, abs_t + base_segments[i], "high") \
-                            + 0.4 * _avg_band(abs_t, abs_t + base_segments[i], "mid")
+                accent_here = _rhythmic_intensity_range(abs_t, abs_t + base_segments[i])
             if band_envelope and accent_here > BURST_THRESH and sv > BURST_FACTOR:
                 sv = BURST_FACTOR
 
@@ -522,11 +547,17 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         seg_raw = slice_schedule[sched_idx]
         sched_idx += 1
 
-        # "Accento" percussivo/melodico nel punto corrente: medi e alti
-        # (tom, snare, hi-hat) pesano piu' dei bassi, che sono gia' coperti
-        # dal beat tracking sulla cassa. Usato per rendere il taglio e il
-        # freeze reattivi a QUELLO che succede nel brano, non solo al beat.
-        accent = 0.6 * _band_at(curr_t, "high") + 0.4 * _band_at(curr_t, "mid")
+        # Intensita' ritmica nel punto corrente: energia percussiva (medi/
+        # alti — tom, snare, hi-hat) al netto della componente melodica/
+        # vocale, cosi' una voce o un lead che sale non viene scambiato per
+        # una batteria. Il basso viene tenuto separato: e' gia' coperto dal
+        # beat tracking sulla cassa, ma lo riusiamo sotto per il freeze
+        # (il classico "freeze sul colpo di cassa").
+        rhythmic_intensity = max(0.0, min(1.0,
+            0.6 * _band_at(curr_t, "high") + 0.4 * _band_at(curr_t, "mid")
+            - 0.35 * _band_at(curr_t, "melody")
+        ))
+        bass_level = _band_at(curr_t, "low")
 
         # Frame-accurate: quanti frame servono per questo segmento?
         remaining_frames = total_frames - frame_count
@@ -539,10 +570,16 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         # ── Slice density: decide se questo beat genera un taglio nuovo ──
         # Se il dado non supera la soglia, accorpa il segmento al pending
         # (stessa sorgente, stessa posizione — effetto "continua a girare").
-        # La densita' base viene alzata quando c'e' un accento su medi/alti
-        # (es. un tom o un hi-hat che si apre): il video taglia di piu'
-        # proprio li', non solo sulla cassa.
-        local_density = min(1.0, slice_density + accent * 0.4)
+        # Non e' piu' un tetto fisso: nei tratti calmi/melodici la densita'
+        # scende sotto la base scelta (il video "respira", meno tagli),
+        # nei tratti percussivi densi sale fino a tagliare su ogni beat.
+        # Senza band_envelope (rhythmic_intensity=0) il minimo e' 0.5x la
+        # base — comunque piu' prudente del vecchio comportamento piatto,
+        # ma se non c'e' audio analizzato la modulazione e' nulla.
+        if band_envelope:
+            local_density = max(0.1, min(1.0, slice_density * (0.5 + 0.9 * rhythmic_intensity)))
+        else:
+            local_density = slice_density
         make_cut = (pending_k is None) or (random.random() < local_density)
 
         if make_cut:
@@ -602,10 +639,13 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 else:
                     on_beat = True
 
-            # Il freeze scatta piu' spesso sugli accenti reali (tom/snare/
-            # hi-hat che si aprono) invece che con probabilita' piatta su
-            # ogni beat: 0.6 e' la base, fino a 1.4x con accento massimo.
-            local_freeze_prob = min(1.0, freeze_prob * (0.6 + 0.8 * accent))
+            # Il freeze scatta piu' spesso sugli accenti percussivi reali
+            # (tom/snare/hi-hat) O su un colpo di basso/cassa forte (il
+            # classico "freeze sul kick") — si prende il piu' alto dei due,
+            # non serve che scattino insieme. 0.5 e' la base, fino a 1.4x
+            # quando uno dei due trigger e' al massimo.
+            freeze_trigger = max(rhythmic_intensity, 0.8 * bass_level)
+            local_freeze_prob = min(1.0, freeze_prob * (0.5 + 0.9 * freeze_trigger))
             if freeze_on_beat and on_beat and local_freeze_prob > 0 and random.random() < local_freeze_prob and seg > 0.15:
                 f_dur = min(freeze_dur, seg * 0.5)
                 frame_f = base_clip.get_frame(0)
@@ -1074,6 +1114,16 @@ def main():
                 help="Usa i beat della musica caricata come punti di taglio. "
                      "Richiede audio caricato nella sidebar."
             )
+            # Senza una key esplicita, st.toggle mantiene il suo stato nella
+            # sessione a prescindere da "value" e "disabled": se in questa
+            # sessione era stato attivato con un audio caricato e poi l'audio
+            # viene rimosso, il toggle resta visivamente disabilitato ma
+            # BLOCCATO su True — nascondendo tutti i controlli manuali (durata
+            # slice, subdivisione, densita') anche se non c'e' piu' nessun
+            # beat da cui derivare i tagli. Forziamo qui la coerenza: senza
+            # audio, beat_slice_mode e' sempre False.
+            if audio_file is None:
+                beat_slice_mode = False
             if auto_vj:
                 beat_slice_mode = True
 

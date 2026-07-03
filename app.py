@@ -250,6 +250,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       slice_density=1.0,
                       beat_subdivision_mode="fixed", beat_subdivision_factor=1.0,
                       beat_subdivision_choices=None,
+                      manual_duration_mode="fixed", manual_duration_choices=None,
                       export_size=None):
     """
     VJ Mode:
@@ -275,6 +276,16 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                         di beat, 4.0 = 4 beat per slice). Usata se mode="fixed".
     - beat_subdivision_choices : lista di fattori (float) tra cui pescare a
                         caso quando mode="random_subset"
+    - manual_duration_mode : "fixed" (usa slice_dur), "random_total" (pesca
+                        a caso tra manual_duration_choices, lista di secondi),
+                        "random_range" (pesca un valore continuo tra
+                        manual_duration_choices=(min,max) in secondi).
+                        Si applica SOLO quando beat_slice_mode=False: durate
+                        variabili senza bisogno di nessun audio caricato,
+                        a differenza della subdivisione beat che richiede
+                        i beat rilevati da un brano.
+    - manual_duration_choices : lista di secondi (random_total) o tupla
+                        (min, max) in secondi (random_range)
     - rms_envelope    : energia globale nel tempo (griglia 0.05s, da
                         analyze_audio). Usata per distinguere un vero
                         silenzio/break da un tratto rumoroso in cui il beat
@@ -483,9 +494,24 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 abs_t += base_segments[i]
                 i += 1
     else:
-        # Slice fissa: costruisce lista uniforme
-        n = max(1, int(duration / slice_dur)) + 2
-        slice_schedule = [slice_dur] * n
+        # Slice manuale: fissa oppure durata variabile (random) — NON richiede
+        # nessun audio. Prima l'unico modo di ottenere durate variabili era la
+        # subdivisione beat, che pero' pretende un audio caricato per rilevare
+        # i beat: qui la variazione e' in secondi assoluti, non beat-relativa.
+        if manual_duration_mode == "random_range" and manual_duration_choices:
+            dmin, dmax = manual_duration_choices
+            dmin = max(0.05, dmin)
+            dmax = max(dmin, dmax)
+            base_dur = dmin
+            n = max(1, int(duration / base_dur)) + 6
+            slice_schedule = [random.uniform(dmin, dmax) for _ in range(n)]
+        elif manual_duration_mode == "random_total" and manual_duration_choices:
+            base_dur = max(0.05, min(manual_duration_choices))
+            n = max(1, int(duration / base_dur)) + 6
+            slice_schedule = [random.choice(manual_duration_choices) for _ in range(n)]
+        else:
+            n = max(1, int(duration / slice_dur)) + 2
+            slice_schedule = [slice_dur] * n
 
     estimated = max(1, len(slice_schedule))
     sched_idx = 0
@@ -1050,6 +1076,7 @@ def main():
             auto_vj = False; crossfade_dur = 0.0
             freeze_on_beat = False; freeze_prob = 0.0; freeze_dur = 0.15
             beat_subdivision_mode = "fixed"; beat_subdivision_factor = 1.0; beat_subdivision_choices = None
+            manual_duration_mode = "fixed"; manual_duration_choices = None
             slice_density = 1.0
         else:
             st.subheader("Parametri VJ Mode")
@@ -1129,19 +1156,71 @@ def main():
 
             # Slider durata visibile solo in modalita' manuale
             if not beat_slice_mode:
-                slice_dur = st.select_slider(
-                    "Durata slice",
-                    options=slice_options,
-                    value=0.25,
-                    format_func=lambda x: f"{x}s",
-                    help="0.1s = stutter ultra-rapido, 2.0s = loop lungo stile CDJ"
+                st.markdown("**Durata slice**")
+                dur_mode_label = st.radio(
+                    "Modalita' durata",
+                    ["Fissa", "Random tra durate", "Random in range"],
+                    horizontal=True,
+                    key="manual_dur_mode_radio",
+                    help=(
+                        "Fissa: tutte le slice hanno la stessa durata. "
+                        "Random tra durate: ogni slice pesca a caso tra le durate scelte. "
+                        "Random in range: ogni slice pesca un valore continuo tra un minimo e un massimo. "
+                        "Non serve nessun audio: la variazione e' in secondi, non legata al beat."
+                    )
                 )
-                # Subdivisione non applicabile in slice manuale: defaults
+
+                if dur_mode_label == "Fissa":
+                    manual_duration_mode = "fixed"
+                    manual_duration_choices = None
+                    slice_dur = st.select_slider(
+                        "Durata slice",
+                        options=slice_options,
+                        value=0.25,
+                        format_func=lambda x: f"{x}s",
+                        help="0.1s = stutter ultra-rapido, 2.0s = loop lungo stile CDJ"
+                    )
+
+                elif dur_mode_label == "Random tra durate":
+                    manual_duration_mode = "random_total"
+                    chosen = st.multiselect(
+                        "Durate possibili",
+                        options=slice_options,
+                        default=[0.1, 0.25, 0.5, 1.0],
+                        format_func=lambda x: f"{x}s",
+                        help="Ogni slice pesca a caso una di queste durate."
+                    )
+                    manual_duration_choices = chosen if chosen else [0.25]
+                    slice_dur = manual_duration_choices[0]
+                    st.caption(f"_Random tra: {', '.join(f'{d}s' for d in manual_duration_choices)}_")
+
+                else:  # Random in range
+                    manual_duration_mode = "random_range"
+                    col_ma, col_mb = st.columns(2)
+                    with col_ma:
+                        dmin = st.select_slider(
+                            "Min", options=slice_options, value=0.1,
+                            format_func=lambda x: f"{x}s", key="manual_dur_min"
+                        )
+                    with col_mb:
+                        dmax = st.select_slider(
+                            "Max", options=slice_options, value=1.0,
+                            format_func=lambda x: f"{x}s", key="manual_dur_max"
+                        )
+                    if dmin > dmax:
+                        dmin, dmax = dmax, dmin
+                    manual_duration_choices = (dmin, dmax)
+                    slice_dur = dmin
+                    st.caption(f"_Random continuo tra {dmin}s e {dmax}s._")
+
+                # Subdivisione beat non applicabile in slice manuale: defaults
                 beat_subdivision_mode = "fixed"
                 beat_subdivision_factor = 1.0
                 beat_subdivision_choices = None
                 slice_density = 1.0
             else:
+                manual_duration_mode = "fixed"
+                manual_duration_choices = None
                 slice_dur = 0.25  # valore di fallback, non usato
                 st.caption("_Durata slice determinata dai beat dell'audio._")
 
@@ -1488,6 +1567,8 @@ def main():
                         beat_subdivision_mode=beat_subdivision_mode,
                         beat_subdivision_factor=beat_subdivision_factor,
                         beat_subdivision_choices=beat_subdivision_choices,
+                        manual_duration_mode=manual_duration_mode,
+                        manual_duration_choices=manual_duration_choices,
                         export_size=export_size
                     )
                     mode_label = "VJ Mode"

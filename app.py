@@ -63,14 +63,43 @@ def analyze_audio(audio_file, duration):
         rms = librosa.feature.rms(y=y)[0]
         rms_norm = rms / (rms.max() + 1e-6)
 
+        # --- Energia per banda (bassi/medi/alti) ---
+        # Serve a rendere il VJ reattivo a cosa succede nel brano oltre al
+        # semplice beat: una cassa in 4 sta nei bassi, un tom o uno snare
+        # aprono nei medi, hi-hat/percussioni brillanti negli alti. Usiamo
+        # lo stesso STFT per tutte e tre le bande cosi' la griglia temporale
+        # e' identica a quella dell'RMS (stesso hop_length di default).
+        S = np.abs(librosa.stft(y))
+        freqs = librosa.fft_frequencies(sr=sr)
+
+        def _band(lo, hi):
+            idx = np.where((freqs >= lo) & (freqs < hi))[0]
+            if len(idx) == 0:
+                return np.zeros(S.shape[1])
+            e = S[idx, :].mean(axis=0)
+            m = e.max()
+            return e / (m + 1e-6) if m > 0 else e
+
+        low_norm  = _band(20, 150)
+        mid_norm  = _band(150, 2000)
+        high_norm = _band(2000, 8000)
+
+        # Allinea le lunghezze (STFT e RMS possono differire di 1 frame)
+        n_common = min(len(rms_norm), len(low_norm), len(mid_norm), len(high_norm))
+        rms_norm  = rms_norm[:n_common]
+        low_norm  = low_norm[:n_common]
+        mid_norm  = mid_norm[:n_common]
+        high_norm = high_norm[:n_common]
+
         # Se il brano caricato e' piu' corto della durata richiesta, in fase
         # di rendering viene ripetuto in loop (audio_loop). Beat e RMS qui
         # venivano invece "stirati" su tutta la durata (np.interp su un
         # array troppo corto) invece che ripetuti: il risultato erano beat
         # rilevati solo nel primo tratto e poi piu' nulla, con il video che
         # perdeva il sync dopo il primo giro del loop audio. Fix: estendiamo
-        # beat_times e rms_norm con lo stesso principio di loop usato per
-        # l'audio vero e proprio, cosi' restano coerenti su tutta la durata.
+        # beat_times e rms_norm (e le bande) con lo stesso principio di loop
+        # usato per l'audio vero e proprio, cosi' restano coerenti su tutta
+        # la durata.
         if 0.05 < actual_dur < duration:
             looped_beats = list(beat_times)
             offset = actual_dur
@@ -80,16 +109,28 @@ def analyze_audio(audio_file, duration):
             beat_times = [b for b in looped_beats if b <= duration]
 
             n_loops = int(np.ceil(duration / actual_dur))
-            rms_norm = np.tile(rms_norm, n_loops)
+            rms_norm  = np.tile(rms_norm, n_loops)
+            low_norm  = np.tile(low_norm, n_loops)
+            mid_norm  = np.tile(mid_norm, n_loops)
+            high_norm = np.tile(high_norm, n_loops)
 
         total_steps = max(1, int(duration / 0.05))
-        rms_envelope = np.interp(
-            np.linspace(0, len(rms_norm)-1, total_steps),
-            np.arange(len(rms_norm)), rms_norm
-        ).tolist()
+
+        def _to_envelope(arr):
+            return np.interp(
+                np.linspace(0, len(arr) - 1, total_steps),
+                np.arange(len(arr)), arr
+            ).tolist()
+
+        rms_envelope = _to_envelope(rms_norm)
+        band_envelope = {
+            "low":  _to_envelope(low_norm),
+            "mid":  _to_envelope(mid_norm),
+            "high": _to_envelope(high_norm),
+        }
     finally:
         os.remove(tmp_path)
-    return beat_times, rms_envelope
+    return beat_times, rms_envelope, band_envelope
 
 def detect_bpm(audio_file):
     """Stima rapida del BPM analizzando solo i primi 30s del file audio.
@@ -186,6 +227,7 @@ AUDIO_MIX_LABELS = {
 def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       stutter_prob, pitch_glitch, p_bar,
                       beat_slice_mode=False, beat_times=None,
+                      rms_envelope=None, band_envelope=None,
                       crossfade_dur=0.0, freeze_on_beat=False,
                       freeze_prob=0.0, freeze_dur=0.15,
                       source_mode="random", source_weights=None,
@@ -218,6 +260,14 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                         di beat, 4.0 = 4 beat per slice). Usata se mode="fixed".
     - beat_subdivision_choices : lista di fattori (float) tra cui pescare a
                         caso quando mode="random_subset"
+    - rms_envelope    : energia globale nel tempo (griglia 0.05s, da
+                        analyze_audio). Usata per distinguere un vero
+                        silenzio/break da un tratto rumoroso in cui il beat
+                        tracker ha solo perso l'aggancio.
+    - band_envelope   : dict {"low","mid","high"} di energia per banda
+                        (stessa griglia 0.05s). Rende slice_density e
+                        freeze_prob reattivi a cosa succede nel brano (tom,
+                        hi-hat, apertura sui medi/alti) oltre al beat nudo.
 
     Anti-ripetizione v3: sistema bucket — distribuisce i tagli uniformemente
     nelle zone del sorgente, funziona bene sia su clip corti che su lunghi (50s+).
@@ -280,16 +330,47 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         cut_points = [0.0] + [b for b in beat_arr_sorted if 0.0 < b < duration] + [duration]
         cut_points = sorted(set(cut_points))
 
+        # Energia media del brano su un intervallo [t0, t1), dalla griglia
+        # 0.05s di rms_envelope. Se non e' disponibile, torna un valore
+        # "neutro" (comportamento storico: tratta il gap come rumoroso).
+        def _avg_energy(t0, t1):
+            if not rms_envelope:
+                return 1.0
+            i0 = min(int(t0 / 0.05), len(rms_envelope) - 1)
+            i1 = min(max(i0, int(t1 / 0.05)), len(rms_envelope) - 1)
+            seg = rms_envelope[i0:i1 + 1] or [rms_envelope[i0]]
+            return sum(seg) / len(seg)
+
+        QUIET_ENERGY_THRESH = 0.15
+
         # --- Segmenti base: un elemento per ogni intervallo beat-to-beat ---
+        # Quando il beat tracker perde l'aggancio per >4s (break, cambio di
+        # sezione, silenzio) il vecchio codice riempiva SEMPRE il buco con
+        # n fette identiche calcolate sulla media globale del brano. Il
+        # problema: se il buco e' un vero break/calo di energia, quelle
+        # fette artificiali tagliano comunque a raffica, dando la sensazione
+        # che il video "acceleri" in un punto musicalmente calmo; se invece
+        # e' un tratto rumoroso ma non periodico, la griglia troppo fitta
+        # produce la stessa raffica. In entrambi i casi, al ritorno del
+        # beat vero il taglio successivo e' comunque ancorato al timestamp
+        # reale (cut_points[i+1]), quindi il problema non e' la fase ma il
+        # "riempimento" scelto per il buco. Ora guardiamo l'energia:
+        # silenzio vero -> una sola slice lunga (nessun taglio finto);
+        # energia presente ma beat non rilevato -> griglia piu' larga.
         base_segments = []
         for i in range(len(cut_points) - 1):
             d = cut_points[i+1] - cut_points[i]
             if d <= 0:
                 continue
             if d > 4.0:
-                n_fill = max(1, round(d / avg_interval))
-                fill_d = d / n_fill
-                base_segments.extend([fill_d] * n_fill)
+                gap_energy = _avg_energy(cut_points[i], cut_points[i+1])
+                if gap_energy < QUIET_ENERGY_THRESH:
+                    base_segments.append(d)
+                else:
+                    interval = max(avg_interval * 1.5, 1.0)
+                    n_fill = max(1, round(d / interval))
+                    fill_d = d / n_fill
+                    base_segments.extend([fill_d] * n_fill)
             else:
                 base_segments.append(d)
 
@@ -354,10 +435,53 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     pending_k     = None  # sorgente corrente (None = prima slice)
     pending_start = 0.0   # punto di inizio nel video sorgente
 
-    while frame_count < total_frames and sched_idx < len(slice_schedule):
+    # Energia per banda nel punto t (griglia 0.05s). Restituisce 0 se non
+    # disponibile: senza band_envelope il comportamento resta quello storico.
+    def _band_at(t, band_name):
+        if not band_envelope:
+            return 0.0
+        arr = band_envelope.get(band_name)
+        if not arr:
+            return 0.0
+        idx = min(int(t / 0.05), len(arr) - 1)
+        return arr[idx]
+
+    # Compensazione crossfade: ogni clip crossfadata viene posizionata
+    # "start_t = t - cf" secondi PRIMA del taglio secco (vedi assemblaggio
+    # finale piu' sotto). Il loop qui sopra pero' si fermava quando
+    # frame_count raggiungeva total_frames NOMINALE (somma delle durate,
+    # senza overlap): la timeline REALE dopo il crossfade e' piu' corta di
+    # quanto sottratto da ogni overlap, quindi il video finale usciva piu'
+    # breve del richiesto e, con molti tagli (beat-slice fitto), sempre
+    # piu' fuori sync via via che gli overlap si accumulavano. Estendiamo
+    # qui il target (total_frames) della stessa quantita' che il
+    # crossfade sottrarra' dopo, cosi' la timeline compressa finale torna
+    # a coincidere con "duration".
+    last_committed_dur = [None]  # mutabile, ultima durata clip aggiunta
+
+    def _register_clip(dur):
+        nonlocal total_frames
+        if crossfade_dur > 0 and last_committed_dur[0] is not None:
+            cf_est = min(crossfade_dur, dur * 0.4, last_committed_dur[0] * 0.4)
+            total_frames += max(0, round(cf_est * fps))
+        last_committed_dur[0] = dur
+
+    while frame_count < total_frames:
+        if sched_idx >= len(slice_schedule):
+            if not slice_schedule:
+                break
+            # Materiale extra richiesto solo per compensare l'overlap dei
+            # crossfade: ricicliamo la stessa griglia di tagli dall'inizio.
+            sched_idx = 0
         curr_t = frame_count / fps
         seg_raw = slice_schedule[sched_idx]
         sched_idx += 1
+
+        # "Accento" percussivo/melodico nel punto corrente: medi e alti
+        # (tom, snare, hi-hat) pesano piu' dei bassi, che sono gia' coperti
+        # dal beat tracking sulla cassa. Usato per rendere il taglio e il
+        # freeze reattivi a QUELLO che succede nel brano, non solo al beat.
+        accent = 0.6 * _band_at(curr_t, "high") + 0.4 * _band_at(curr_t, "mid")
 
         # Frame-accurate: quanti frame servono per questo segmento?
         remaining_frames = total_frames - frame_count
@@ -370,7 +494,11 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         # ── Slice density: decide se questo beat genera un taglio nuovo ──
         # Se il dado non supera la soglia, accorpa il segmento al pending
         # (stessa sorgente, stessa posizione — effetto "continua a girare").
-        make_cut = (pending_k is None) or (random.random() < slice_density)
+        # La densita' base viene alzata quando c'e' un accento su medi/alti
+        # (es. un tom o un hi-hat che si apre): il video taglia di piu'
+        # proprio li', non solo sulla cassa.
+        local_density = min(1.0, slice_density + accent * 0.4)
+        make_cut = (pending_k is None) or (random.random() < local_density)
 
         if make_cut:
             # Scarica eventuale pending prima di iniziare il nuovo clip
@@ -398,6 +526,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                     pn = max(1, round(p_actual * fps))
                     pclip = fit_to_size(p_src.subclip(pending_start, p_end), target_size).set_fps(fps).set_duration(p_actual)
                     all_clips.append(pclip)
+                    _register_clip(p_actual)
                     frame_count += pn
                     total_fragments += 1
                     pending_seg = 0.0
@@ -428,7 +557,11 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 else:
                     on_beat = True
 
-            if freeze_on_beat and on_beat and freeze_prob > 0 and random.random() < freeze_prob and seg > 0.15:
+            # Il freeze scatta piu' spesso sugli accenti reali (tom/snare/
+            # hi-hat che si aprono) invece che con probabilita' piatta su
+            # ogni beat: 0.6 e' la base, fino a 1.4x con accento massimo.
+            local_freeze_prob = min(1.0, freeze_prob * (0.6 + 0.8 * accent))
+            if freeze_on_beat and on_beat and local_freeze_prob > 0 and random.random() < local_freeze_prob and seg > 0.15:
                 f_dur = min(freeze_dur, seg * 0.5)
                 frame_f = base_clip.get_frame(0)
                 freeze_clip = ImageClip(frame_f).set_duration(f_dur).set_fps(fps)
@@ -441,9 +574,11 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 stutter_frames = min(n_frames * loop_reps, total_frames - frame_count)
                 combo = combo.set_duration(stutter_frames / fps)
                 all_clips.append(combo)
+                _register_clip(stutter_frames / fps)
                 frame_count += stutter_frames
             else:
                 all_clips.append(base_clip)
+                _register_clip(seg)
                 frame_count += n_frames
 
             pending_seg   = 0.0
@@ -475,6 +610,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             p_actual = max(1.0 / fps, p_end - pending_start)
             pclip = fit_to_size(p_src.subclip(pending_start, p_end), target_size).set_fps(fps).set_duration(p_actual)
             all_clips.append(pclip)
+            _register_clip(p_actual)
             total_fragments += 1
 
     # Schema reale dei tagli usati per assemblare il video (durata di ogni
@@ -1170,8 +1306,10 @@ def main():
                 return
 
             p_bar = st.progress(0, text="Avvio...")
-            beat_times    = None
-            rms_envelope  = None
+            beat_times      = None
+            rms_envelope    = None
+            vj_rms_envelope = None
+            vj_band_envelope = None
             beat_count    = 0
             engine        = None
             tmp_audio_path = None
@@ -1182,12 +1320,12 @@ def main():
                 # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice
                 if app_mode == "Decompose" and beat_sync and audio_file:
                     p_bar.progress(0.05, text="Analisi audio...")
-                    beat_times, rms_envelope = analyze_audio(audio_file, durata)
+                    beat_times, rms_envelope, _ = analyze_audio(audio_file, durata)
                     beat_count = len(beat_times)
                 elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat) and audio_file:
                     p_bar.progress(0.05, text="Analisi beat...")
                     audio_file.seek(0)
-                    beat_times, _ = analyze_audio(audio_file, durata)
+                    beat_times, vj_rms_envelope, vj_band_envelope = analyze_audio(audio_file, durata)
                     beat_count = len(beat_times)
                     audio_file.seek(0)  # reset per eventuale uso audio custom dopo
 
@@ -1226,6 +1364,8 @@ def main():
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
                         beat_slice_mode=beat_slice_mode,
                         beat_times=beat_times,
+                        rms_envelope=vj_rms_envelope,
+                        band_envelope=vj_band_envelope,
                         crossfade_dur=crossfade_dur,
                         freeze_on_beat=freeze_on_beat,
                         freeze_prob=freeze_prob,
@@ -1266,6 +1406,7 @@ def main():
                                  f"* Audio Mix: {AUDIO_MIX_LABELS.get(audio_mix_mode, audio_mix_mode)}" +
                                  (f" (musica {int(vol_music*100)}% / originale {int(vol_original*100)}%)"
                                   if audio_mix_mode in ("mix", "mix_decomposed") else "") + "\n"
+                                 f"* Reattivita' multi-banda: {'ON' if vj_band_envelope else 'OFF'}\n"
                                  f"* Formato: {formato_label}")
 
                 # Audio custom / mix

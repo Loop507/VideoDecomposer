@@ -1506,10 +1506,18 @@ def main():
             # in secondi/frame, non in pixel) ma a risoluzione ridotta e su
             # meno secondi — genera in una frazione del tempo del render pieno.
             if is_preview:
-                _pw, _ph = export_size
-                _scale = 0.4
-                export_size_run = (max(2, int(_pw * _scale) // 2 * 2),
-                                    max(2, int(_ph * _scale) // 2 * 2))
+                if export_size:
+                    _pw, _ph = export_size
+                    _scale = 0.4
+                    export_size_run = (max(2, int(_pw * _scale) // 2 * 2),
+                                        max(2, int(_ph * _scale) // 2 * 2))
+                else:
+                    # Formato "Originale": la risoluzione dipende dal video V1
+                    # caricato e non e' nota qui prima di montare i clip, quindi
+                    # non possiamo pre-scalare il target — il downscale per
+                    # l'anteprima viene applicato dopo, sul clip gia' montato
+                    # (vedi piu' sotto, subito prima della scrittura).
+                    export_size_run = None
             else:
                 export_size_run = export_size
 
@@ -1681,6 +1689,12 @@ def main():
 
                 if is_preview:
                     p_bar.progress(0.75, text="Scrittura anteprima...")
+                    if export_size is None:
+                        # "Originale": non pre-scalato in generazione (non
+                        # conoscevamo la risoluzione sorgente in anticipo) —
+                        # ridimensioniamo qui il clip gia' montato, prima di
+                        # scrivere il file di anteprima.
+                        final = final.resize(height=360)
                     prev_v = os.path.join(tempfile.gettempdir(), f"fastpreview_{random.randint(0,9999)}.mp4")
                     final.write_videofile(prev_v, codec="libx264", audio_codec="aac",
                                           preset="ultrafast", logger=None)

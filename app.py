@@ -998,7 +998,8 @@ def main():
     st.title("VideoDecomposer: Rendering & Report")
 
     for key, val in [('video_ready', False), ('report_data', ''),
-                     ('video_path', ''), ('preview_path', ''), ('render_name', 'loop507_render')]:
+                     ('video_path', ''), ('preview_path', ''), ('render_name', 'loop507_render'),
+                     ('fast_preview_path', '')]:
         if key not in st.session_state:
             st.session_state[key] = val
 
@@ -1484,7 +1485,34 @@ def main():
 
         st.markdown("---")
 
-        if st.button("AVVIA RENDERING", use_container_width=True):
+        preview_duration = st.slider(
+            "Durata anteprima (s)", min_value=3, max_value=max(3, int(durata)),
+            value=min(15, max(3, int(durata))), step=1,
+            help="Quanti secondi generare per l'anteprima veloce, a bassa risoluzione. "
+                 "Il render finale usa sempre la durata piena e la risoluzione scelta sopra, "
+                 "indipendentemente da questo valore."
+        )
+
+        col_prev_btn, col_final_btn = st.columns(2)
+        with col_prev_btn:
+            do_preview = st.button("Anteprima veloce", use_container_width=True)
+        with col_final_btn:
+            do_final = st.button("AVVIA RENDERING", use_container_width=True)
+
+        if do_preview or do_final:
+            is_preview = do_preview and not do_final
+            run_durata = preview_duration if is_preview else durata
+            # Anteprima: stessa struttura di montaggio (i tagli sono calcolati
+            # in secondi/frame, non in pixel) ma a risoluzione ridotta e su
+            # meno secondi — genera in una frazione del tempo del render pieno.
+            if is_preview:
+                _pw, _ph = export_size
+                _scale = 0.4
+                export_size_run = (max(2, int(_pw * _scale) // 2 * 2),
+                                    max(2, int(_ph * _scale) // 2 * 2))
+            else:
+                export_size_run = export_size
+
             paths = {i: tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
                      for i, f in enumerate(files) if f}
             for i, f in enumerate(files):
@@ -1507,17 +1535,36 @@ def main():
             cut_schedule  = None
 
             try:
-                # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice
+                # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice.
+                # Sempre calcolata sulla durata PIENA (durata, non run_durata) e
+                # tenuta in cache: cosi' l'anteprima veloce riusa esattamente la
+                # stessa struttura di beat/bande del render finale, e cambiare
+                # un parametro (stutter, subdivisione...) e rigenerare l'anteprima
+                # non rifa' da capo beat-tracking/HPSS, che e' il pezzo piu' lento.
+                _audio_cache_key = (
+                    getattr(audio_file, "name", None), getattr(audio_file, "size", None), round(durata, 2)
+                ) if audio_file else None
+
                 if app_mode == "Decompose" and beat_sync and audio_file:
-                    p_bar.progress(0.05, text="Analisi audio...")
-                    beat_times, rms_envelope, _ = analyze_audio(audio_file, durata)
+                    if _audio_cache_key and st.session_state.get("_audio_cache_key") == _audio_cache_key:
+                        beat_times, rms_envelope = st.session_state["_audio_cache"]
+                    else:
+                        p_bar.progress(0.05, text="Analisi audio...")
+                        beat_times, rms_envelope, _ = analyze_audio(audio_file, durata)
+                        st.session_state["_audio_cache_key"] = _audio_cache_key
+                        st.session_state["_audio_cache"] = (beat_times, rms_envelope)
                     beat_count = len(beat_times)
                 elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat) and audio_file:
-                    p_bar.progress(0.05, text="Analisi beat...")
-                    audio_file.seek(0)
-                    beat_times, vj_rms_envelope, vj_band_envelope = analyze_audio(audio_file, durata)
+                    if _audio_cache_key and st.session_state.get("_vj_audio_cache_key") == _audio_cache_key:
+                        beat_times, vj_rms_envelope, vj_band_envelope = st.session_state["_vj_audio_cache"]
+                    else:
+                        p_bar.progress(0.05, text="Analisi beat...")
+                        audio_file.seek(0)
+                        beat_times, vj_rms_envelope, vj_band_envelope = analyze_audio(audio_file, durata)
+                        audio_file.seek(0)  # reset per eventuale uso audio custom dopo
+                        st.session_state["_vj_audio_cache_key"] = _audio_cache_key
+                        st.session_state["_vj_audio_cache"] = (beat_times, vj_rms_envelope, vj_band_envelope)
                     beat_count = len(beat_times)
-                    audio_file.seek(0)  # reset per eventuale uso audio custom dopo
 
                 engine = VideoEngine()
                 engine.load_sources(paths)
@@ -1525,17 +1572,17 @@ def main():
                 if app_mode == "Decompose":
                     if mix_mode == "Quote Fisse":
                         final, cut_schedule = engine.generate_fixed_quota(
-                            quotas, r_a, r_b, r_rand, durata, fps,
+                            quotas, r_a, r_b, r_rand, run_durata, fps,
                             s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
                             beat_times=beat_times, rms_envelope=rms_envelope,
-                            export_size=export_size
+                            export_size=export_size_run
                         )
                     else:
                         final, cut_schedule = engine.generate(
-                            weights, r_a, r_b, r_rand, durata, fps,
+                            weights, r_a, r_b, r_rand, run_durata, fps,
                             s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
                             beat_times=beat_times, rms_envelope=rms_envelope,
-                            export_size=export_size
+                            export_size=export_size_run
                         )
                     total_frags = engine.stats["fragments"]
                     mode_label = "Decompose"
@@ -1550,7 +1597,7 @@ def main():
                                  f"* Formato: {formato_label}")
                 else:
                     final, total_frags, cut_schedule = generate_dj_remix(
-                        engine.video_clips, durata, fps,
+                        engine.video_clips, run_durata, fps,
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
                         beat_slice_mode=beat_slice_mode,
                         beat_times=beat_times,
@@ -1569,7 +1616,7 @@ def main():
                         beat_subdivision_choices=beat_subdivision_choices,
                         manual_duration_mode=manual_duration_mode,
                         manual_duration_choices=manual_duration_choices,
-                        export_size=export_size
+                        export_size=export_size_run
                     )
                     mode_label = "VJ Mode"
                     if beat_slice_mode and beat_times:
@@ -1616,47 +1663,57 @@ def main():
                         # Gli slice tagliano anche il brano: stessa griglia
                         # di tagli del video (cut_schedule), ma pescati a
                         # caso nel brano invece che in sequenza naturale.
-                        audio_clip = decompose_audio_track(audio_clip, cut_schedule, durata)
-                    elif audio_clip.duration < durata:
-                        audio_clip = audio_loop(audio_clip, duration=durata)
+                        audio_clip = decompose_audio_track(audio_clip, cut_schedule, run_durata)
+                    elif audio_clip.duration < run_durata:
+                        audio_clip = audio_loop(audio_clip, duration=run_durata)
                     else:
-                        audio_clip = audio_clip.set_duration(durata)
+                        audio_clip = audio_clip.set_duration(run_durata)
 
                     if audio_mix_mode in ("mix", "mix_decomposed") and final.audio is not None:
                         music_track = audio_clip.fx(volumex, vol_music)
-                        original_track = final.audio.set_duration(durata).fx(volumex, vol_original)
-                        mixed = CompositeAudioClip([original_track, music_track]).set_duration(durata)
+                        original_track = final.audio.set_duration(run_durata).fx(volumex, vol_original)
+                        mixed = CompositeAudioClip([original_track, music_track]).set_duration(run_durata)
                         final = final.set_audio(mixed)
                     else:
                         final = final.set_audio(audio_clip)
                 elif audio_mix_mode == "original_only":
                     pass  # mantiene l'audio originale già presente in final
 
-                out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,9999)}.mp4")
-                p_bar.progress(0.75, text="Scrittura video...")
-                final.write_videofile(out_v, codec="libx264", audio_codec="aac",
-                                      preset="ultrafast", logger=None)
-                time.sleep(1.5)
-
-                p_bar.progress(0.90, text="Generando preview...")
-                prev_v = os.path.join(tempfile.gettempdir(), f"preview_{random.randint(0,9999)}.mp4")
-                prev_clip = final.resize(height=480)
-                prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac",
+                if is_preview:
+                    p_bar.progress(0.75, text="Scrittura anteprima...")
+                    prev_v = os.path.join(tempfile.gettempdir(), f"fastpreview_{random.randint(0,9999)}.mp4")
+                    final.write_videofile(prev_v, codec="libx264", audio_codec="aac",
                                           preset="ultrafast", logger=None)
-                prev_clip.close()
-                final.close()
-                time.sleep(0.5)
-                p_bar.progress(1.0, text="Pronto!")
+                    final.close()
+                    p_bar.progress(1.0, text="Anteprima pronta!")
+                    st.session_state.fast_preview_path = prev_v
+                else:
+                    out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,9999)}.mp4")
+                    p_bar.progress(0.75, text="Scrittura video...")
+                    final.write_videofile(out_v, codec="libx264", audio_codec="aac",
+                                          preset="ultrafast", logger=None)
+                    time.sleep(1.5)
 
-                # Nome condiviso video + report (stesso codice)
-                render_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-                mode_short = "VJ" if app_mode == "VJ Mode" else "DC"
-                render_name = f"loop507_{mode_short}_{render_id}"
+                    p_bar.progress(0.90, text="Generando preview...")
+                    prev_v = os.path.join(tempfile.gettempdir(), f"preview_{random.randint(0,9999)}.mp4")
+                    prev_clip = final.resize(height=480)
+                    prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac",
+                                              preset="ultrafast", logger=None)
+                    prev_clip.close()
+                    final.close()
+                    time.sleep(0.5)
+                    p_bar.progress(1.0, text="Pronto!")
 
-                st.session_state.video_path   = out_v
-                st.session_state.preview_path = prev_v
-                st.session_state.render_name  = render_name
-                st.session_state.report_data  = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
+                if not is_preview:
+                    # Nome condiviso video + report (stesso codice)
+                    render_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    mode_short = "VJ" if app_mode == "VJ Mode" else "DC"
+                    render_name = f"loop507_{mode_short}_{render_id}"
+
+                    st.session_state.video_path   = out_v
+                    st.session_state.preview_path = prev_v
+                    st.session_state.render_name  = render_name
+                    st.session_state.report_data  = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: FILE: {render_name}
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
 :: MOTORE: video_decomposed [05.03]
@@ -1677,7 +1734,7 @@ def main():
 
 #loop507 #datanoise #decomposition #glitchart #audiovisual #noisemusic #algorithmicvideo #brutalist #sounddesign #computationalminimalism #signalcorruption #recursivecollapse #newmediaart
 """
-                st.session_state.video_ready = True
+                    st.session_state.video_ready = True
 
             except Exception as e:
                 st.error(f"Errore: {e}")
@@ -1695,6 +1752,11 @@ def main():
                         os.remove(tmp_audio_path)
                     except OSError:
                         pass
+
+        if st.session_state.get("fast_preview_path") and os.path.exists(st.session_state["fast_preview_path"]):
+            st.markdown("---")
+            st.caption(f"Anteprima veloce ({preview_duration}s, bassa risoluzione) — regola i parametri e rigenera quante volte vuoi")
+            st.video(st.session_state["fast_preview_path"])
 
         if st.session_state.video_ready:
             st.markdown("---")

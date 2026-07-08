@@ -991,6 +991,67 @@ class VideoEngine:
 
 
 # ---------------------------------------------------------------------------
+# REPORT: traduzione IT -> EN (etichette statiche; i valori dinamici restano
+# invariati perche' sono numeri/nomi file e non vengono intercettati dalle
+# sostituzioni sotto). Le frasi piu' lunghe/specifiche vengono sostituite
+# prima di quelle piu' corte per evitare match parziali indesiderati.
+# ---------------------------------------------------------------------------
+_REPORT_IT_EN = [
+    ("Non e' montaggio. E' anatomia di un segnale corrotto.",
+     "This isn't editing. It's the anatomy of a corrupted signal."),
+    ("Regia e Algoritmo", "Direction and Algorithm"),
+    ("Minimalismo Computazionale / Glitch Brutalista", "Computational Minimalism / Brutalist Glitch"),
+    ("Float a 32 bit / Punto di Clipping", "32-bit Float / Clipping Point"),
+    ("Random (pesi Start%/End%)", "Random (Start%/End% weights)"),
+    ("Reattivita' multi-banda", "Multi-band Reactivity"),
+    ("no ripetizioni consecutive", "no consecutive repeats"),
+    ("Alternanza Sorgenti", "Source Alternation"),
+    ("Slice Automatico", "Automatic Slice"),
+    ("random totale", "full random"),
+    ("random in range", "random in range"),
+    ("beat rilevati", "beats detected"),
+    ("Sorgenti Video", "Video Sources"),
+    ("Frammenti Generati", "Fragments Generated"),
+    ("Quote Fisse", "Fixed Quotas"),
+    ("Beat Sync", "Beat Sync"),
+    ("Freeze on beat", "Freeze on beat"),
+    ("Audio Mix", "Audio Mix"),
+    ("Auto VJ", "Auto VJ"),
+    ("Slice Mode", "Slice Mode"),
+    ("Loop Reps", "Loop Reps"),
+    ("Stutter Prob", "Stutter Prob"),
+    ("Pitch Glitch", "Pitch Glitch"),
+    ("Crossfade", "Crossfade"),
+    ("Modalita'", "Mode"),
+    ("Geometria", "Geometry"),
+    ("Strisce", "Stripes"),
+    ("Formato", "Format"),
+    ("Ritmo", "Rhythm"),
+    ("Pesata", "Weighted"),
+    ("Casuale", "Random"),
+    ("musica", "music"),
+    ("originale", "original"),
+    ("preset", "preset"),
+    ("fisso", "fixed"),
+    ("FILE", "FILE"),
+    ("STILE", "STYLE"),
+    ("MOTORE", "ENGINE"),
+    ("AUDIO", "AUDIO"),
+    ("PROCESSO", "PROCESS"),
+    ("TECHNICAL LOG SHEET", "TECHNICAL LOG SHEET"),
+]
+
+
+def translate_report_to_en(text: str) -> str:
+    """Traduce le etichette statiche del report IT in EN, lasciando invariati
+    i valori dinamici (nomi file, numeri, percentuali)."""
+    result = text
+    for it, en in _REPORT_IT_EN:
+        result = result.replace(it, en)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # INTERFACCIA
 # ---------------------------------------------------------------------------
 def main():
@@ -998,8 +1059,7 @@ def main():
     st.title("VideoDecomposer: Rendering & Report")
 
     for key, val in [('video_ready', False), ('report_data', ''),
-                     ('video_path', ''), ('preview_path', ''), ('render_name', 'loop507_render'),
-                     ('fast_preview_path', '')]:
+                     ('video_path', ''), ('preview_path', ''), ('render_name', 'loop507_render')]:
         if key not in st.session_state:
             st.session_state[key] = val
 
@@ -1485,41 +1545,11 @@ def main():
 
         st.markdown("---")
 
-        preview_duration = st.slider(
-            "Durata anteprima (s)", min_value=3, max_value=max(3, int(durata)),
-            value=min(15, max(3, int(durata))), step=1,
-            help="Quanti secondi generare per l'anteprima veloce, a bassa risoluzione. "
-                 "Il render finale usa sempre la durata piena e la risoluzione scelta sopra, "
-                 "indipendentemente da questo valore."
-        )
+        do_final = st.button("AVVIA RENDERING", use_container_width=True)
 
-        col_prev_btn, col_final_btn = st.columns(2)
-        with col_prev_btn:
-            do_preview = st.button("Anteprima veloce", use_container_width=True)
-        with col_final_btn:
-            do_final = st.button("AVVIA RENDERING", use_container_width=True)
-
-        if do_preview or do_final:
-            is_preview = do_preview and not do_final
-            run_durata = preview_duration if is_preview else durata
-            # Anteprima: stessa struttura di montaggio (i tagli sono calcolati
-            # in secondi/frame, non in pixel) ma a risoluzione ridotta e su
-            # meno secondi — genera in una frazione del tempo del render pieno.
-            if is_preview:
-                if export_size:
-                    _pw, _ph = export_size
-                    _scale = 0.4
-                    export_size_run = (max(2, int(_pw * _scale) // 2 * 2),
-                                        max(2, int(_ph * _scale) // 2 * 2))
-                else:
-                    # Formato "Originale": la risoluzione dipende dal video V1
-                    # caricato e non e' nota qui prima di montare i clip, quindi
-                    # non possiamo pre-scalare il target — il downscale per
-                    # l'anteprima viene applicato dopo, sul clip gia' montato
-                    # (vedi piu' sotto, subito prima della scrittura).
-                    export_size_run = None
-            else:
-                export_size_run = export_size
+        if do_final:
+            run_durata = durata
+            export_size_run = export_size
 
             paths = {i: tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
                      for i, f in enumerate(files) if f}
@@ -1544,11 +1574,10 @@ def main():
 
             try:
                 # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice.
-                # Sempre calcolata sulla durata PIENA (durata, non run_durata) e
-                # tenuta in cache: cosi' l'anteprima veloce riusa esattamente la
-                # stessa struttura di beat/bande del render finale, e cambiare
-                # un parametro (stutter, subdivisione...) e rigenerare l'anteprima
-                # non rifa' da capo beat-tracking/HPSS, che e' il pezzo piu' lento.
+                # Sempre calcolata sulla durata PIENA e tenuta in cache: se si
+                # rigenera il render cambiando solo un parametro (stutter,
+                # subdivisione...) non si rifa' da capo beat-tracking/HPSS,
+                # che e' il pezzo piu' lento.
                 _audio_cache_key = (
                     getattr(audio_file, "name", None), getattr(audio_file, "size", None), round(durata, 2)
                 ) if audio_file else None
@@ -1687,54 +1716,39 @@ def main():
                 elif audio_mix_mode == "original_only":
                     pass  # mantiene l'audio originale già presente in final
 
-                if is_preview:
-                    p_bar.progress(0.75, text="Scrittura anteprima...")
-                    if export_size is None:
-                        # "Originale": non pre-scalato in generazione (non
-                        # conoscevamo la risoluzione sorgente in anticipo) —
-                        # ridimensioniamo qui il clip gia' montato, prima di
-                        # scrivere il file di anteprima.
-                        final = final.resize(height=360)
-                    prev_v = os.path.join(tempfile.gettempdir(), f"fastpreview_{random.randint(0,9999)}.mp4")
-                    final.write_videofile(prev_v, codec="libx264", audio_codec="aac",
+                out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,9999)}.mp4")
+                p_bar.progress(0.75, text="Scrittura video...")
+                final.write_videofile(out_v, codec="libx264", audio_codec="aac",
+                                      preset="ultrafast", logger=None)
+                time.sleep(1.5)
+
+                p_bar.progress(0.90, text="Generando preview...")
+                prev_v = os.path.join(tempfile.gettempdir(), f"preview_{random.randint(0,9999)}.mp4")
+                prev_clip = final.resize(height=480)
+                prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac",
                                           preset="ultrafast", logger=None)
-                    final.close()
-                    p_bar.progress(1.0, text="Anteprima pronta!")
-                    st.session_state.fast_preview_path = prev_v
-                else:
-                    out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,9999)}.mp4")
-                    p_bar.progress(0.75, text="Scrittura video...")
-                    final.write_videofile(out_v, codec="libx264", audio_codec="aac",
-                                          preset="ultrafast", logger=None)
-                    time.sleep(1.5)
+                prev_clip.close()
+                final.close()
+                time.sleep(0.5)
+                p_bar.progress(1.0, text="Pronto!")
 
-                    p_bar.progress(0.90, text="Generando preview...")
-                    prev_v = os.path.join(tempfile.gettempdir(), f"preview_{random.randint(0,9999)}.mp4")
-                    prev_clip = final.resize(height=480)
-                    prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac",
-                                              preset="ultrafast", logger=None)
-                    prev_clip.close()
-                    final.close()
-                    time.sleep(0.5)
-                    p_bar.progress(1.0, text="Pronto!")
+                # Nome condiviso video + report (stesso codice)
+                render_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                mode_short = "VJ" if app_mode == "VJ Mode" else "DC"
+                render_name = f"loop507_{mode_short}_{render_id}"
 
-                if not is_preview:
-                    # Nome condiviso video + report (stesso codice)
-                    render_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    mode_short = "VJ" if app_mode == "VJ Mode" else "DC"
-                    render_name = f"loop507_{mode_short}_{render_id}"
+                st.session_state.video_path   = out_v
+                st.session_state.preview_path = prev_v
+                st.session_state.render_name  = render_name
 
-                    st.session_state.video_path   = out_v
-                    st.session_state.preview_path = prev_v
-                    st.session_state.render_name  = render_name
-                    st.session_state.report_data  = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
+                report_it = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: FILE: {render_name}
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
 :: MOTORE: video_decomposed [05.03]
 :: AUDIO: 48 kHz / Float a 32 bit / Punto di Clipping
 :: PROCESSO: {mode_label}
 
-> TECHNICAL LOG SHEET:
+:: TECHNICAL LOG SHEET:
 * Sorgenti Video: {engine.stats['sources']}
 * Frammenti Generati: {total_frags}
 * Modalita': {mix_log}
@@ -1744,11 +1758,14 @@ def main():
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
 
-> Regia e Algoritmo: Loop507
+:: Regia e Algoritmo: Loop507
 
-#loop507 #datanoise #decomposition #glitchart #audiovisual #noisemusic #algorithmicvideo #brutalist #sounddesign #computationalminimalism #signalcorruption #recursivecollapse #newmediaart
-"""
-                    st.session_state.video_ready = True
+#loop507 #datanoise #decomposition #glitchart #audiovisual #noisemusic #algorithmicvideo #brutalist #sounddesign #computationalminimalism #signalcorruption #recursivecollapse #newmediaart"""
+
+                report_en = translate_report_to_en(report_it)
+
+                st.session_state.report_data = report_it + "\n\n" + ("=" * 40) + "\n\n" + report_en + "\n"
+                st.session_state.video_ready = True
 
             except Exception as e:
                 st.error(f"Errore: {e}")
@@ -1766,11 +1783,6 @@ def main():
                         os.remove(tmp_audio_path)
                     except OSError:
                         pass
-
-        if st.session_state.get("fast_preview_path") and os.path.exists(st.session_state["fast_preview_path"]):
-            st.markdown("---")
-            st.caption(f"Anteprima veloce ({preview_duration}s, bassa risoluzione) — regola i parametri e rigenera quante volte vuoi")
-            st.video(st.session_state["fast_preview_path"])
 
         if st.session_state.video_ready:
             st.markdown("---")

@@ -1134,9 +1134,29 @@ def main():
                     _bpm = detect_bpm(audio_file)
                 st.session_state["detected_bpm"] = _bpm
                 st.session_state["_bpm_key"] = audio_key
+                st.session_state["manual_bpm_input"] = 0.0  # nuovo brano: azzera l'eventuale BPM manuale del brano precedente
             detected_bpm = st.session_state.get("detected_bpm")
             if detected_bpm:
                 st.caption(f"_BPM rilevato: **{detected_bpm:.1f}**_")
+            _manual_bpm = st.number_input(
+                "BPM manuale (0 = usa quello rilevato)",
+                min_value=0.0, max_value=300.0, value=0.0, step=0.5,
+                key="manual_bpm_input",
+                help=(
+                    "Lascia a 0 per usare il BPM rilevato automaticamente. "
+                    "Inserisci un valore per forzarlo — utile su brani "
+                    "sperimentali dove la rilevazione automatica puo' "
+                    "sbagliare, o se conosci gia' il BPM esatto. "
+                    "Attenzione: i TAGLI continuano comunque a seguire i "
+                    "beat reali rilevati nell'audio (la cassa) — questo "
+                    "valore serve solo a guidare la misura suggerita in "
+                    "'Fissa' e i calcoli di 'Adattiva al tempo'/stima "
+                    "frammenti, non sposta i punti di taglio."
+                )
+            )
+            if _manual_bpm > 0:
+                detected_bpm = _manual_bpm
+                st.session_state["detected_bpm"] = _manual_bpm
         else:
             detected_bpm = None
         st.divider()

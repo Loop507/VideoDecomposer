@@ -1,4 +1,4 @@
 moviepy==1.0.3
 numpy<2.0
-streamlit
-librosa
+streamlit==1.59.1
+librosa==0.11.0

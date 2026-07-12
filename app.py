@@ -1803,15 +1803,27 @@ def main():
                 p_bar.progress(0.75, text="Scrittura video...")
                 final.write_videofile(out_v, codec="libx264", audio_codec="aac",
                                       preset="ultrafast", logger=None)
+                final.close()
                 time.sleep(1.5)
 
+                # --- Anteprima 480p ---
+                # NON si riparte da 'final' (l'intera catena di frammenti,
+                # crossfade e composizione andrebbe rieseguita una seconda
+                # volta: su un brano corto e' invisibile, su 3-4 minuti con
+                # centinaia/migliaia di frammenti raddoppia memoria di picco
+                # e tempo, proprio il tipo di carico che fa andare in OOM un
+                # host con RAM limitata come il piano gratuito di Streamlit
+                # Cloud). Si riapre invece il file GIA' scritto su disco: e'
+                # un singolo stream h264 semplice, molto piu' leggero da
+                # ridecodificare che l'intero grafo di clip.
                 p_bar.progress(0.90, text="Generando preview...")
                 prev_v = os.path.join(tempfile.gettempdir(), f"preview_{random.randint(0,9999)}.mp4")
-                prev_clip = final.resize(height=480)
+                prev_src = VideoFileClip(out_v)
+                prev_clip = prev_src.resize(height=480)
                 prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac",
                                           preset="ultrafast", logger=None)
                 prev_clip.close()
-                final.close()
+                prev_src.close()
                 time.sleep(0.5)
                 p_bar.progress(1.0, text="Pronto!")
 

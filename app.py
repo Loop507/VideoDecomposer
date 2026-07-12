@@ -239,6 +239,27 @@ AUDIO_MIX_LABELS = {
     "mix_decomposed": "Mix decomposto (musica decomposta + originale)",
 }
 
+def concatenate_in_batches(clips, method="chain", batch_size=250):
+    """Concatena una lista (anche molto lunga, migliaia di elementi) di clip
+    in modo gerarchico invece che in un'unica chiamata piatta.
+
+    Con brani lunghi (3-4 min) e subdivisioni beat fitte, generate_dj_remix
+    puo' produrre migliaia di frammenti minuscoli: passarli tutti insieme a
+    concatenate_videoclips() fa crescere l'overhead di MoviePy (indicizzazione
+    interna, profondita' della catena di wrapper per get_frame) in modo molto
+    piu' che lineare. Concatenando prima a blocchi da `batch_size` e poi i
+    blocchi tra loro, il risultato finale e' identico (stesso ordine, stessa
+    durata) ma ogni singola chiamata a concatenate_videoclips lavora su una
+    lista corta, tenendo l'overhead sotto controllo.
+    """
+    if len(clips) <= batch_size:
+        return concatenate_videoclips(clips, method=method)
+    batches = [
+        concatenate_videoclips(clips[i:i + batch_size], method=method)
+        for i in range(0, len(clips), batch_size)
+    ]
+    return concatenate_videoclips(batches, method=method)
+
 def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       stutter_prob, pitch_glitch, p_bar,
                       beat_slice_mode=False, beat_times=None,
@@ -251,7 +272,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       beat_subdivision_mode="fixed", beat_subdivision_factor=1.0,
                       beat_subdivision_choices=None,
                       manual_duration_mode="fixed", manual_duration_choices=None,
-                      export_size=None):
+                      export_size=None, react_to_peaks=True):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
@@ -294,6 +315,14 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                         (stessa griglia 0.05s). Rende slice_density e
                         freeze_prob reattivi a cosa succede nel brano (tom,
                         hi-hat, apertura sui medi/alti) oltre al beat nudo.
+    - react_to_peaks  : se True (default), un accento percussivo forte forza
+                        un taglio fine (BURST_FACTOR) anche quando la misura
+                        scelta o pescata a caso e' diversa — utile in
+                        subdivisione "Fissa" per dare reattivita' al ritmo.
+                        Se False, gli accenti NON scavalcano piu' la misura
+                        gia' scelta: in "Random totale"/"Random in range" la
+                        pesca resta puramente casuale tra i valori previsti,
+                        senza che il burst-detector la sovrascriva mai.
 
     Anti-ripetizione v3: sistema bucket — distribuisce i tagli uniformemente
     nelle zone del sorgente, funziona bene sia su clip corti che su lunghi (50s+).
@@ -447,15 +476,20 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             else:  # random_subset
                 sv = random.choice(choices_pool)
 
-            # Override reattivo: prima di applicare la misura scelta (o quella
-            # del preset), guardiamo se in QUESTO punto del brano c'e' un
-            # accento percussivo forte (tom, snare, raffica di hi-hat), al
-            # netto della componente melodica/vocale — cosi' una voce acuta
-            # o un lead che sale non vengono scambiati per una batteria.
-            # Senza questo, un fill veloce dentro un brano piu' lento viene
-            # comunque tagliato alla stessa cadenza fissa di tutto il resto
-            # — la misura scelta non ha mai modo di "sapere" cosa succede
-            # davvero nell'audio in quel preciso istante.
+            # Override reattivo (solo se react_to_peaks=True): prima di
+            # applicare la misura scelta (o quella del preset), guardiamo se
+            # in QUESTO punto del brano c'e' un accento percussivo forte
+            # (tom, snare, raffica di hi-hat), al netto della componente
+            # melodica/vocale — cosi' una voce acuta o un lead che sale non
+            # vengono scambiati per una batteria. Senza questo, un fill
+            # veloce dentro un brano piu' lento viene comunque tagliato alla
+            # stessa cadenza fissa di tutto il resto — la misura scelta non
+            # ha mai modo di "sapere" cosa succede davvero nell'audio in
+            # quel preciso istante. Con react_to_peaks=False (default per
+            # "Random totale"/"Random in range") questo scavalcamento e'
+            # disattivato: le misure pescate a caso restano tali, senza che
+            # un accento le sovrascriva mai con BURST_FACTOR — cosi' TUTTI i
+            # valori selezionati dall'utente vengono davvero sfruttati.
             # Importante: se sv raggruppa piu' beat (sv >= 1.0), un burst
             # breve nascosto in UN beat del gruppo si annacqua se mediamo
             # l'intensita' sull'intero intervallo del gruppo (2s di media
@@ -471,7 +505,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                     t_cursor += d
             else:
                 accent_here = _rhythmic_intensity_range(abs_t, abs_t + base_segments[i])
-            if band_envelope and accent_here > BURST_THRESH and sv > BURST_FACTOR:
+            if react_to_peaks and band_envelope and accent_here > BURST_THRESH and sv > BURST_FACTOR:
                 sv = BURST_FACTOR
 
             if sv >= 1.0:
@@ -745,7 +779,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 t = start_t + clip.duration
         final = CompositeVideoClip(positioned, size=target_size).set_duration(min(t, duration))
     else:
-        final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
+        final = concatenate_in_batches(all_clips, method="chain").set_duration(duration)
     return final, total_fragments, cut_schedule
 
 def decompose_audio_track(audio_clip, cut_schedule, total_duration):
@@ -936,7 +970,7 @@ class VideoEngine:
 
         random.shuffle(all_clips)
         cut_schedule = [c.duration for c in all_clips]
-        final = concatenate_videoclips(all_clips, method="chain").set_duration(duration)
+        final = concatenate_in_batches(all_clips, method="chain").set_duration(duration)
         if use_scan:
             _rms = rms_envelope
             final = final.fl(lambda gf, t: apply_procedural_slit_scan(
@@ -982,7 +1016,7 @@ class VideoEngine:
                            text=f"Composizione: {self.stats['fragments']} pezzi")
 
         cut_schedule = [c.duration for c in clips]
-        final = concatenate_videoclips(clips, method="chain").set_duration(duration)
+        final = concatenate_in_batches(clips, method="chain").set_duration(duration)
         if use_scan:
             _rms = rms_envelope
             final = final.fl(lambda gf, t: apply_procedural_slit_scan(
@@ -1138,7 +1172,7 @@ def main():
             freeze_on_beat = False; freeze_prob = 0.0; freeze_dur = 0.15
             beat_subdivision_mode = "fixed"; beat_subdivision_factor = 1.0; beat_subdivision_choices = None
             manual_duration_mode = "fixed"; manual_duration_choices = None
-            slice_density = 1.0
+            slice_density = 1.0; react_to_peaks = True
         else:
             st.subheader("Parametri VJ Mode")
             slice_options = [0.1, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0]
@@ -1279,6 +1313,7 @@ def main():
                 beat_subdivision_factor = 1.0
                 beat_subdivision_choices = None
                 slice_density = 1.0
+                react_to_peaks = True
             else:
                 manual_duration_mode = "fixed"
                 manual_duration_choices = None
@@ -1293,6 +1328,7 @@ def main():
                     beat_subdivision_factor = preset["subdiv"]
                     beat_subdivision_choices = None
                     slice_density = 1.0
+                    react_to_peaks = True
                 else:
                     # --- Subdivisione Beat ---
                     st.markdown("**Subdivisione beat**")
@@ -1305,6 +1341,25 @@ def main():
                             "Fissa: tutti gli slice usano la stessa misura. "
                             "Random totale: ogni slice pesca una misura a caso tra tutte. "
                             "Random in range: ogni slice pesca tra le misure nel range scelto."
+                        )
+                    )
+
+                    _subdiv_mode_tmp = {
+                        "Fissa": "fixed", "Random totale": "random_total",
+                        "Random in range": "random_subset"
+                    }[subdiv_mode_label]
+                    react_to_peaks = st.toggle(
+                        "Reagisci ai picchi audio",
+                        value=(_subdiv_mode_tmp == "fixed"),
+                        key=f"react_peaks_{_subdiv_mode_tmp}",
+                        help=(
+                            "Se ON, un accento percussivo forte (tom/snare/raffica di "
+                            "hi-hat) forza un taglio piu' fine anche se la misura scelta "
+                            "e' un'altra — utile in 'Fissa' per un ritmo che reagisce ai "
+                            "picchi. Se OFF, gli accenti non scavalcano mai la misura: "
+                            "in 'Random totale'/'Random in range' il taglio resta "
+                            "puramente casuale tra i valori previsti, tutti davvero "
+                            "sfruttati. Default: ON solo in 'Fissa'."
                         )
                     )
 
@@ -1380,6 +1435,33 @@ def main():
                     slice_density = slice_density_pct / 100.0
                     if slice_density_pct < 100:
                         st.caption(f"_Solo il {slice_density_pct}% dei beat genera un taglio — il resto continua sulla stessa sorgente._")
+
+                    # --- Stima frammenti previsti (avviso per brani lunghi) ---
+                    # fragments_per_beat = 1/sv sia per sv<1 (uno slice diventa
+                    # 1/sv frammenti) sia per sv>=1 (sv beat vengono accorpati
+                    # in 1 frammento, quindi 1/sv frammenti per beat): formula
+                    # unica, media sui fattori in gioco per la modalita' scelta.
+                    _bpm_est = st.session_state.get("detected_bpm") or 120.0
+                    _dur_est = st.session_state.get("durata_input", 15)
+                    _beats_est = max(1.0, (_dur_est * _bpm_est) / 60.0)
+                    if beat_subdivision_mode == "fixed":
+                        _factors_est = [beat_subdivision_factor]
+                    elif beat_subdivision_mode == "random_total":
+                        _factors_est = list(MEASURE_FACTORS.values())
+                    else:
+                        _factors_est = beat_subdivision_choices or [1.0]
+                    _mean_fpb = sum(1.0 / f for f in _factors_est) / len(_factors_est)
+                    _est_fragments = int(_beats_est * slice_density * _mean_fpb)
+                    if _est_fragments > 1200:
+                        st.warning(
+                            f"⚠️ Con questi parametri sono previsti circa **{_est_fragments} "
+                            f"frammenti** per {_dur_est}s di durata finale. Su brani lunghi "
+                            f"(3-4 min) o subdivisioni molto fitte, tanti frammenti rallentano "
+                            f"parecchio il rendering. Se noti l'app lenta, prova una misura "
+                            f"piu' larga (es. 1/4 invece di 1/16) o abbassa la densita' slice."
+                        )
+                    elif _est_fragments > 500:
+                        st.caption(f"_Frammenti previsti: ~{_est_fragments}._")
 
             st.markdown("---")
             loop_reps = st.slider(
@@ -1479,7 +1561,7 @@ def main():
 
     with c3:
         st.subheader("Esportazione")
-        durata = st.number_input("Durata Totale (s)", 5, 300, 15)
+        durata = st.number_input("Durata Totale (s)", 5, 300, 15, key="durata_input")
         fps    = st.selectbox("FPS", [24, 30])
         formato_label = st.selectbox(
             "Formato",
@@ -1653,7 +1735,8 @@ def main():
                         beat_subdivision_choices=beat_subdivision_choices,
                         manual_duration_mode=manual_duration_mode,
                         manual_duration_choices=manual_duration_choices,
-                        export_size=export_size_run
+                        export_size=export_size_run,
+                        react_to_peaks=react_to_peaks
                     )
                     mode_label = "VJ Mode"
                     if beat_slice_mode and beat_times:

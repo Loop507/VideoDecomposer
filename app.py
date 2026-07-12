@@ -67,11 +67,23 @@ def analyze_audio(audio_file, duration):
         # bum-bum-bum — gruppi di colpi non equidistanti) smussa tutto sulla
         # griglia piu' plausibile, perdendo il singolo colpo fuori schema.
         # onset_detect() non assume periodicita': trova ogni transiente
-        # (ogni "bum") cosi' com'e', regolare o no. backtrack=True sposta il
-        # timestamp dall'apice dell'energia all'inizio reale dell'attacco
-        # (il punto di minimo locale che lo precede), piu' preciso per
-        # sincronizzare un taglio esattamente sul colpo percepito.
-        onset_times = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True).tolist()
+        # cosi' com'e', regolare o no.
+        #
+        # ATTENZIONE pero': onset_detect() su tutto lo spettro (com'era prima)
+        # rileva QUALSIASI transiente — hi-hat, rumore, armonici, texture —
+        # non solo il colpo di cassa/basso che si segue a orecchio. Su un
+        # brano sperimentale pieno di suoni non percussivi questo produce
+        # tagli che sembrano "non seguire il ritmo" perche' in realta' stanno
+        # seguendo fedelmente ANCHE cose che non sono la cassa. Restringiamo
+        # l'envelope di onset alla sola banda bassa (0-200Hz circa, dove vive
+        # kick/basso) con un mel-spectrogram a pochi filtri (n_mels basso,
+        # altrimenti alcuni filtri restano vuoti su una banda cosi' stretta e
+        # librosa avvisa con un warning): il risultato segue il "bum" reale,
+        # ignorando hi-hat/testure/armonici che vivono altrove nello spettro.
+        onset_env_low = librosa.onset.onset_strength(y=y, sr=sr, fmax=200, n_mels=24)
+        onset_times = librosa.onset.onset_detect(
+            onset_envelope=onset_env_low, sr=sr, units="time", backtrack=True, y=y
+        ).tolist()
 
         rms = librosa.feature.rms(y=y)[0]
         rms_norm = rms / (rms.max() + 1e-6)

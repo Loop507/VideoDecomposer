@@ -183,6 +183,24 @@ def bpm_to_default_subdivision(bpm):
     return "2"        # molto veloce (D&B, hardcore): 4 beat ok ma 2 e' piu' incisivo
 
 
+def local_bpm_to_subdivision_factor(local_bpm):
+    """Mappa il BPM ISTANTANEO (calcolato dall'intervallo reale tra due beat
+    consecutivi, non dalla media dell'intero brano) a una misura di
+    subdivisione: piu' il tratto e' veloce, piu' fine il taglio; quando il
+    tempo rallenta (es. un ritornello piu' disteso), la misura si allarga di
+    conseguenza — cosi' un brano che accelera e rallenta nel corso della
+    durata non resta ancorato a un'unica misura scelta sulla media globale."""
+    if local_bpm is None or local_bpm <= 0:
+        return 1.0
+    if local_bpm >= 150:
+        return 0.5   # molto veloce: mezzo beat, taglio incisivo
+    if local_bpm >= 100:
+        return 1.0   # medio-veloce: un beat
+    if local_bpm >= 75:
+        return 2.0   # medio-lento: raggruppa 2 beat, si respira un po'
+    return 4.0        # lento: raggruppa 4 beat, fraseggio ampio
+
+
 # --- MOTORE PROCEDURALE (slit scan) ---
 def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, scan_mode,
                                 rms_envelope=None):
@@ -454,9 +472,12 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
         # --- Applica la subdivisione beat ---
         # beat_subdivision_mode:
-        #   "fixed"        -> ogni segmento usa beat_subdivision_factor
-        #   "random_total" -> fattore pescato a caso tra TUTTE le misure per ogni segmento
-        #   "random_subset"-> fattore pescato tra beat_subdivision_choices per ogni segmento
+        #   "fixed"          -> ogni segmento usa beat_subdivision_factor
+        #   "random_total"   -> fattore pescato a caso tra TUTTE le misure per ogni segmento
+        #   "random_subset"  -> fattore pescato tra beat_subdivision_choices per ogni segmento
+        #   "tempo_adaptive" -> fattore calcolato dal BPM ISTANTANEO del segmento
+        #                       (base_segments[i]), non da un valore fisso o casuale:
+        #                       tratti veloci -> taglio fine, tratti piu' lenti -> misura piu' larga
         ALL_FACTORS = list(MEASURE_FACTORS.values())
         choices_pool = (beat_subdivision_choices or ALL_FACTORS)
         choices_pool = [f for f in choices_pool if f > 0]
@@ -473,6 +494,10 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 sv = beat_subdivision_factor
             elif beat_subdivision_mode == "random_total":
                 sv = random.choice(ALL_FACTORS)
+            elif beat_subdivision_mode == "tempo_adaptive":
+                _d = base_segments[i]
+                _local_bpm = 60.0 / _d if _d > 0 else None
+                sv = local_bpm_to_subdivision_factor(_local_bpm)
             else:  # random_subset
                 sv = random.choice(choices_pool)
 
@@ -1334,32 +1359,37 @@ def main():
                     st.markdown("**Subdivisione beat**")
                     subdiv_mode_label = st.radio(
                         "Modalita'",
-                        ["Fissa", "Random totale", "Random in range"],
+                        ["Fissa", "Adattiva al tempo", "Random totale", "Random in range"],
                         horizontal=True,
                         key="subdiv_mode_radio",
                         help=(
                             "Fissa: tutti gli slice usano la stessa misura. "
+                            "Adattiva al tempo: la misura si calcola dal BPM istantaneo di "
+                            "ogni tratto — piu' veloce = taglio piu' fine, piu' lento = misura "
+                            "piu' larga, senza bisogno di sceglierla a mano. "
                             "Random totale: ogni slice pesca una misura a caso tra tutte. "
                             "Random in range: ogni slice pesca tra le misure nel range scelto."
                         )
                     )
 
                     _subdiv_mode_tmp = {
-                        "Fissa": "fixed", "Random totale": "random_total",
+                        "Fissa": "fixed", "Adattiva al tempo": "tempo_adaptive",
+                        "Random totale": "random_total",
                         "Random in range": "random_subset"
                     }[subdiv_mode_label]
                     react_to_peaks = st.toggle(
                         "Reagisci ai picchi audio",
-                        value=(_subdiv_mode_tmp == "fixed"),
+                        value=(_subdiv_mode_tmp in ("fixed", "tempo_adaptive")),
                         key=f"react_peaks_{_subdiv_mode_tmp}",
                         help=(
                             "Se ON, un accento percussivo forte (tom/snare/raffica di "
                             "hi-hat) forza un taglio piu' fine anche se la misura scelta "
-                            "e' un'altra — utile in 'Fissa' per un ritmo che reagisce ai "
-                            "picchi. Se OFF, gli accenti non scavalcano mai la misura: "
-                            "in 'Random totale'/'Random in range' il taglio resta "
-                            "puramente casuale tra i valori previsti, tutti davvero "
-                            "sfruttati. Default: ON solo in 'Fissa'."
+                            "e' un'altra — utile in 'Fissa' e 'Adattiva al tempo' per un "
+                            "ritmo che reagisce anche ai picchi, non solo al tempo. Se OFF, "
+                            "gli accenti non scavalcano mai la misura: in 'Random totale'/"
+                            "'Random in range' il taglio resta puramente casuale tra i "
+                            "valori previsti, tutti davvero sfruttati. Default: ON in "
+                            "'Fissa' e 'Adattiva al tempo'."
                         )
                     )
 
@@ -1384,6 +1414,18 @@ def main():
                             desc = f"{round(beat_subdivision_factor)} beat per slice"
                         _bpm_note = f" · auto da {st.session_state['detected_bpm']:.1f} bpm" if st.session_state.get("detected_bpm") else ""
                         st.caption(f"_Slice = {subdiv_sel} beat — {desc}{_bpm_note}_")
+
+                    elif subdiv_mode_label == "Adattiva al tempo":
+                        beat_subdivision_mode = "tempo_adaptive"
+                        beat_subdivision_factor = 1.0
+                        beat_subdivision_choices = None
+                        st.caption(
+                            "_Ogni slice si adatta al BPM istantaneo del tratto: "
+                            "≥150 bpm → 1/2 beat, 100-150 → 1 beat, 75-100 → 2 beat, "
+                            "<75 → 4 beat. Se il brano accelera o rallenta (es. "
+                            "ritornello piu' disteso), il taglio si allarga o si "
+                            "restringe di conseguenza, senza doverlo impostare a mano._"
+                        )
 
                     elif subdiv_mode_label == "Random totale":
                         beat_subdivision_mode = "random_total"
@@ -1446,6 +1488,8 @@ def main():
                     _beats_est = max(1.0, (_dur_est * _bpm_est) / 60.0)
                     if beat_subdivision_mode == "fixed":
                         _factors_est = [beat_subdivision_factor]
+                    elif beat_subdivision_mode == "tempo_adaptive":
+                        _factors_est = [local_bpm_to_subdivision_factor(_bpm_est)]
                     elif beat_subdivision_mode == "random_total":
                         _factors_est = list(MEASURE_FACTORS.values())
                     else:
@@ -1741,7 +1785,7 @@ def main():
                     mode_label = "VJ Mode"
                     if beat_slice_mode and beat_times:
                         _subdiv_lbl = next((m for m, v in MEASURE_FACTORS.items() if abs(v - beat_subdivision_factor) < 1e-9), "1/1")
-                        _subdiv_str = {"fixed": _subdiv_lbl, "random_total": "random totale", "random_subset": "random in range"}.get(beat_subdivision_mode, _subdiv_lbl)
+                        _subdiv_str = {"fixed": _subdiv_lbl, "tempo_adaptive": "adattiva al tempo", "random_total": "random totale", "random_subset": "random in range"}.get(beat_subdivision_mode, _subdiv_lbl)
                         slice_info = f"beat-driven ({beat_count} beat, subdiv {_subdiv_str})"
                     else:
                         slice_info = f"{slice_dur}s fisso"

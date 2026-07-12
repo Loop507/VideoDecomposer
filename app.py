@@ -61,6 +61,18 @@ def analyze_audio(audio_file, duration):
         _, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
         beat_times = librosa.frames_to_time(beat_frames, sr=sr).tolist()
 
+        # --- Onset detection ---
+        # beat_track() cerca un TEMPO PERIODICO (una griglia a intervalli
+        # regolari): su un ritmo irregolare/sincopato (es. bum, bum-bum,
+        # bum-bum-bum — gruppi di colpi non equidistanti) smussa tutto sulla
+        # griglia piu' plausibile, perdendo il singolo colpo fuori schema.
+        # onset_detect() non assume periodicita': trova ogni transiente
+        # (ogni "bum") cosi' com'e', regolare o no. backtrack=True sposta il
+        # timestamp dall'apice dell'energia all'inizio reale dell'attacco
+        # (il punto di minimo locale che lo precede), piu' preciso per
+        # sincronizzare un taglio esattamente sul colpo percepito.
+        onset_times = librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True).tolist()
+
         rms = librosa.feature.rms(y=y)[0]
         rms_norm = rms / (rms.max() + 1e-6)
 
@@ -122,6 +134,13 @@ def analyze_audio(audio_file, duration):
                 offset += actual_dur
             beat_times = [b for b in looped_beats if b <= duration]
 
+            looped_onsets = list(onset_times)
+            offset = actual_dur
+            while offset < duration:
+                looped_onsets.extend([o + offset for o in onset_times])
+                offset += actual_dur
+            onset_times = [o for o in looped_onsets if o <= duration]
+
             n_loops = int(np.ceil(duration / actual_dur))
             rms_norm    = np.tile(rms_norm, n_loops)
             low_norm    = np.tile(low_norm, n_loops)
@@ -146,7 +165,7 @@ def analyze_audio(audio_file, duration):
         }
     finally:
         os.remove(tmp_path)
-    return beat_times, rms_envelope, band_envelope
+    return beat_times, rms_envelope, band_envelope, onset_times
 
 def detect_bpm(audio_file):
     """Stima rapida del BPM analizzando solo i primi 30s del file audio.
@@ -291,15 +310,21 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       beat_subdivision_mode="fixed", beat_subdivision_factor=1.0,
                       beat_subdivision_choices=None,
                       manual_duration_mode="fixed", manual_duration_choices=None,
-                      export_size=None, react_to_peaks=True):
+                      export_size=None, react_to_peaks=True,
+                      cut_source="beat", onset_times=None):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
     - loop_reps       : quante volte ogni slice viene loopata in modalita' stutter
     - stutter_prob    : probabilita' [0-1] che uno slice sia stutterato
     - pitch_glitch    : se True, alcuni slice vengono speed-warpati
-    - beat_slice_mode : se True, usa i beat come punti di taglio invece di slice_dur fisso
+    - beat_slice_mode : se True, usa i beat (o gli onset, vedi cut_source) come punti di taglio invece di slice_dur fisso
     - beat_times      : lista di timestamp beat (da analyze_audio)
+    - cut_source      : "beat" (default, griglia ritmica periodica da beat_track)
+                        oppure "onset" (ogni transiente/colpo rilevato da onset_detect,
+                        utile su ritmi irregolari/sincopati dove beat_track smussa
+                        tutto su una griglia periodica e perde i colpi fuori schema)
+    - onset_times     : lista di timestamp onset (da analyze_audio), usata quando cut_source="onset"
     - crossfade_dur   : durata in secondi del crossfade tra slice consecutive (0 = taglio secco)
     - freeze_on_beat  : se True, alcune slice iniziano con un freeze-frame
     - freeze_prob     : probabilita' [0-1] che una slice abbia il freeze-frame
@@ -387,11 +412,12 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         counts[chosen] += 1
         return s
 
-    # Costruisce la lista di durate slice: beat-driven o fissa
-    if beat_slice_mode and beat_times and len(beat_times) > 1:
+    # Costruisce la lista di durate slice: beat-driven, onset-driven o fissa
+    _cut_time_source = onset_times if (cut_source == "onset" and onset_times) else beat_times
+    if beat_slice_mode and _cut_time_source and len(_cut_time_source) > 1:
         # Punti di taglio ancorati ai beat REALI (timestamp assoluti), non a
         # intervalli ri-ciclati da t=0 (che desincronizzavano i tagli dalla musica).
-        beat_arr_sorted = sorted(beat_times)
+        beat_arr_sorted = sorted(_cut_time_source)
 
         # Intervallo medio "valido" tra beat consecutivi, usato come fallback
         # per coprire l'eventuale coda prima del primo beat e dopo l'ultimo.
@@ -1322,6 +1348,24 @@ def main():
             if auto_vj:
                 beat_slice_mode = True
 
+            cut_source = "beat"
+            if beat_slice_mode and not auto_vj:
+                cut_source_label = st.radio(
+                    "Sorgente tagli",
+                    ["Beat (griglia ritmica)", "Onset (ogni colpo rilevato)"],
+                    horizontal=True,
+                    key="cut_source_radio",
+                    help=(
+                        "Beat: griglia a tempo periodico (beat_track) — ideale "
+                        "su ritmi regolari a 4/4. Onset: segue OGNI transiente "
+                        "rilevato nell'audio, regolare o no — utile su ritmi "
+                        "irregolari/sincopati (es. bum, bum-bum, bum-bum-bum) "
+                        "dove la griglia periodica smusserebbe i colpi fuori "
+                        "schema."
+                    )
+                )
+                cut_source = "onset" if cut_source_label.startswith("Onset") else "beat"
+
             # Slider durata visibile solo in modalita' manuale
             if not beat_slice_mode:
                 st.markdown("**Durata slice**")
@@ -1740,6 +1784,7 @@ def main():
             rms_envelope    = None
             vj_rms_envelope = None
             vj_band_envelope = None
+            vj_onset_times  = None
             beat_count    = 0
             engine        = None
             tmp_audio_path = None
@@ -1761,20 +1806,20 @@ def main():
                         beat_times, rms_envelope = st.session_state["_audio_cache"]
                     else:
                         p_bar.progress(0.05, text="Analisi audio...")
-                        beat_times, rms_envelope, _ = analyze_audio(audio_file, durata)
+                        beat_times, rms_envelope, _, _ = analyze_audio(audio_file, durata)
                         st.session_state["_audio_cache_key"] = _audio_cache_key
                         st.session_state["_audio_cache"] = (beat_times, rms_envelope)
                     beat_count = len(beat_times)
                 elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat) and audio_file:
                     if _audio_cache_key and st.session_state.get("_vj_audio_cache_key") == _audio_cache_key:
-                        beat_times, vj_rms_envelope, vj_band_envelope = st.session_state["_vj_audio_cache"]
+                        beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times = st.session_state["_vj_audio_cache"]
                     else:
                         p_bar.progress(0.05, text="Analisi beat...")
                         audio_file.seek(0)
-                        beat_times, vj_rms_envelope, vj_band_envelope = analyze_audio(audio_file, durata)
+                        beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times = analyze_audio(audio_file, durata)
                         audio_file.seek(0)  # reset per eventuale uso audio custom dopo
                         st.session_state["_vj_audio_cache_key"] = _audio_cache_key
-                        st.session_state["_vj_audio_cache"] = (beat_times, vj_rms_envelope, vj_band_envelope)
+                        st.session_state["_vj_audio_cache"] = (beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times)
                     beat_count = len(beat_times)
 
                 engine = VideoEngine()
@@ -1828,7 +1873,9 @@ def main():
                         manual_duration_mode=manual_duration_mode,
                         manual_duration_choices=manual_duration_choices,
                         export_size=export_size_run,
-                        react_to_peaks=react_to_peaks
+                        react_to_peaks=react_to_peaks,
+                        cut_source=cut_source,
+                        onset_times=vj_onset_times
                     )
                     mode_label = "VJ Mode"
                     if beat_slice_mode and beat_times:
@@ -1941,7 +1988,7 @@ def main():
 * Modalita': {mix_log}
 {extra_log}
 {'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
-{'* Slice Automatico: ON — ' + str(beat_count) + ' beat rilevati' if app_mode == 'VJ Mode' and beat_slice_mode and beat_times else ''}
+{'* Slice Automatico: ON — ' + str(len(vj_onset_times) if cut_source == 'onset' and vj_onset_times else beat_count) + (' onset rilevati' if cut_source == 'onset' else ' beat rilevati') if app_mode == 'VJ Mode' and beat_slice_mode and beat_times else ''}
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
 

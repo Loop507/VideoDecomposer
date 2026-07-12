@@ -7,6 +7,7 @@ import numpy as np
 from datetime import datetime
 import bisect
 from moviepy.editor import VideoFileClip, concatenate_videoclips, ImageClip, CompositeVideoClip
+from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 from PIL import Image
 import librosa
 
@@ -877,9 +878,36 @@ class VideoEngine:
         self.video_clips = {}
         self.stats = {"fragments": 0, "sources": 0}
 
-    def load_sources(self, paths):
+    def load_sources(self, paths, target_size=None):
+        # target_size = (w, h) del formato di export scelto (None = "Originale").
+        # Quando l'export NON e' "Originale", il video finale verra' comunque
+        # tagliato/scalato a quella dimensione (fit_to_size) — decodificare le
+        # sorgenti a piena risoluzione nativa (es. 4K) per poi scartare i pixel
+        # in piu' e' solo spreco di RAM, moltiplicato per ogni sorgente caricata
+        # (con 4 video insieme il carico si somma: candidato concreto per OOM
+        # su host con memoria limitata come il piano gratuito di Streamlit Cloud).
+        #
+        # ATTENZIONE: MoviePy, se target_resolution specifica SIA altezza CHE
+        # larghezza, forza quell'esatta dimensione senza rispettare l'aspect
+        # ratio (deformazione) — romperebbe silenziosamente il crop-to-fill di
+        # fit_to_size. Per questo qui si vincola SOLO l'asse piu' grande della
+        # sorgente (l'altro resta None), cosi' MoviePy scala mantenendo l'aspect
+        # ratio nativo — fit_to_size riceve un frame piu' piccolo ma con le
+        # stesse proporzioni di sempre, e ricalcola scale/crop esattamente come
+        # prima, solo partendo da una risoluzione di decodifica piu' bassa.
+        # Se il probe fallisce per qualsiasi motivo, si procede alla risoluzione
+        # nativa: nessuna regressione, solo nessun risparmio di memoria.
+        DECODE_CAP = 1600  # margine oltre il piu' grande formato di export (1280px)
         for i, p in paths.items():
-            self.video_clips[i] = VideoFileClip(p)
+            target_resolution = None
+            if target_size is not None:
+                try:
+                    native_w, native_h = ffmpeg_parse_infos(p)["video_size"]
+                    if max(native_w, native_h) > DECODE_CAP:
+                        target_resolution = (None, DECODE_CAP) if native_w >= native_h else (DECODE_CAP, None)
+                except Exception:
+                    target_resolution = None
+            self.video_clips[i] = VideoFileClip(p, target_resolution=target_resolution)
         self.stats["sources"] = len(self.video_clips)
         first_key = next(iter(self.video_clips))
         return self.video_clips[first_key].size
@@ -1750,7 +1778,7 @@ def main():
                     beat_count = len(beat_times)
 
                 engine = VideoEngine()
-                engine.load_sources(paths)
+                engine.load_sources(paths, target_size=export_size_run)
 
                 if app_mode == "Decompose":
                     if mix_mode == "Quote Fisse":

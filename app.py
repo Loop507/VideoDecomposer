@@ -1469,10 +1469,11 @@ def main():
                         "Random totale": "random_total",
                         "Random in range": "random_subset"
                     }[subdiv_mode_label]
+                    _react_default = (_subdiv_mode_tmp in ("fixed", "tempo_adaptive")) and cut_source != "onset"
                     react_to_peaks = st.toggle(
                         "Reagisci ai picchi audio",
-                        value=(_subdiv_mode_tmp in ("fixed", "tempo_adaptive")),
-                        key=f"react_peaks_{_subdiv_mode_tmp}",
+                        value=_react_default,
+                        key=f"react_peaks_{_subdiv_mode_tmp}_{cut_source}",
                         help=(
                             "Se ON, un accento percussivo forte (tom/snare/raffica di "
                             "hi-hat) forza un taglio piu' fine anche se la misura scelta "
@@ -1480,8 +1481,11 @@ def main():
                             "ritmo che reagisce anche ai picchi, non solo al tempo. Se OFF, "
                             "gli accenti non scavalcano mai la misura: in 'Random totale'/"
                             "'Random in range' il taglio resta puramente casuale tra i "
-                            "valori previsti, tutti davvero sfruttati. Default: ON in "
-                            "'Fissa' e 'Adattiva al tempo'."
+                            "valori previsti, tutti davvero sfruttati. Con Sorgente tagli "
+                            "'Onset' i segmenti sono gia' allineati sui colpi reali, quindi "
+                            "qui e' OFF di default (una suddivisione forzata aritmetica "
+                            "reintrodurrebbe l'imprecisione che Onset elimina). Default: ON "
+                            "in 'Fissa'/'Adattiva al tempo' con Beat, OFF con Onset."
                         )
                     )
 
@@ -1588,15 +1592,28 @@ def main():
                         _factors_est = beat_subdivision_choices or [1.0]
                     _mean_fpb = sum(1.0 / f for f in _factors_est) / len(_factors_est)
                     _est_fragments = int(_beats_est * slice_density * _mean_fpb)
-                    if _est_fragments > 1200:
+                    # Con formato "Originale" le sorgenti restano a risoluzione
+                    # NATIVA (il fix di decodifica ridotta si applica solo agli
+                    # altri formati, apposta, per non alterare l'output di
+                    # "Originale"): a parita' di frammenti il rischio di OOM e'
+                    # piu' alto, quindi qui la soglia di avviso e' piu' bassa.
+                    _is_originale = st.session_state.get("formato_select", "Originale") == "Originale"
+                    _warn_th = 600 if _is_originale else 1200
+                    _caption_th = 300 if _is_originale else 500
+                    if _est_fragments > _warn_th:
                         st.warning(
                             f"⚠️ Con questi parametri sono previsti circa **{_est_fragments} "
-                            f"frammenti** per {_dur_est}s di durata finale. Su brani lunghi "
-                            f"(3-4 min) o subdivisioni molto fitte, tanti frammenti rallentano "
-                            f"parecchio il rendering. Se noti l'app lenta, prova una misura "
-                            f"piu' larga (es. 1/4 invece di 1/16) o abbassa la densita' slice."
+                            f"frammenti** per {_dur_est}s di durata finale"
+                            + (" **con formato Originale** (sorgenti a piena risoluzione nativa, "
+                               "senza lo sconto di memoria degli altri formati)" if _is_originale else "")
+                            + ". Su brani lunghi (3-4 min), tante sorgenti caricate insieme o "
+                              "subdivisioni molto fitte, tanti frammenti rallentano parecchio il "
+                              "rendering e possono causare un riavvio dell'app per esaurimento "
+                              "memoria. Se noti l'app lenta o che si riavvia, prova una misura "
+                              "piu' larga (es. 1/4 invece di 1/16), abbassa la densita' slice, "
+                              "o passa a un formato diverso da 'Originale'."
                         )
-                    elif _est_fragments > 500:
+                    elif _est_fragments > _caption_th:
                         st.caption(f"_Frammenti previsti: ~{_est_fragments}._")
 
             st.markdown("---")
@@ -1702,6 +1719,7 @@ def main():
         formato_label = st.selectbox(
             "Formato",
             ["Originale", "16:9 (1280x720)", "9:16 (720x1280)", "1:1 (720x720)"],
+            key="formato_select",
             help="Originale = usa la risoluzione del primo video caricato (V1), come sempre. "
                  "Gli altri formati fanno crop-to-fill: scalano e ritagliano al centro, senza "
                  "deformare l'immagine e senza barre nere."

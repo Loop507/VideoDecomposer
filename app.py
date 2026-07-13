@@ -426,6 +426,8 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
     # Costruisce la lista di durate slice: beat-driven, onset-driven o fissa
     _cut_time_source = onset_times if (cut_source == "onset" and onset_times) else beat_times
+    _debug_branch = "beat_slice" if (beat_slice_mode and _cut_time_source and len(_cut_time_source) > 1) else "manual_fallback"
+    cut_points = None  # popolato solo nel ramo beat_slice, usato poi per il debug report
     if beat_slice_mode and _cut_time_source and len(_cut_time_source) > 1:
         # Punti di taglio ancorati ai beat REALI (timestamp assoluti), non a
         # intervalli ri-ciclati da t=0 (che desincronizzavano i tagli dalla musica).
@@ -871,7 +873,17 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         final = CompositeVideoClip(positioned, size=target_size).set_duration(min(t, duration))
     else:
         final = concatenate_in_batches(all_clips, method="chain").set_duration(duration)
-    return final, total_fragments, cut_schedule
+
+    _debug_info = {
+        "branch": _debug_branch,
+        "cut_source": cut_source,
+        "subdivision_mode": beat_subdivision_mode,
+        "n_cut_time_source": len(_cut_time_source) if _cut_time_source else 0,
+        "first_cut_points": (cut_points[:25] if cut_points else None),
+        "first_base_segments": (base_segments[:25] if 'base_segments' in locals() else None),
+        "first_slice_schedule": slice_schedule[:25] if slice_schedule else None,
+    }
+    return final, total_fragments, cut_schedule, _debug_info
 
 def decompose_audio_track(audio_clip, cut_schedule, total_duration):
     """
@@ -1855,6 +1867,7 @@ def main():
             tmp_audio_path = None
             total_frags   = 0
             cut_schedule  = None
+            _dj_debug     = None
 
             try:
                 # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice.
@@ -1917,7 +1930,7 @@ def main():
                                  f"* Geometria: {scan_dir}\n"
                                  f"* Formato: {formato_label}")
                 else:
-                    final, total_frags, cut_schedule = generate_dj_remix(
+                    final, total_frags, cut_schedule, _dj_debug = generate_dj_remix(
                         engine.video_clips, run_durata, fps,
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
                         beat_slice_mode=beat_slice_mode,
@@ -2061,6 +2074,16 @@ def main():
                         f"* Primi tagli effettivi (s): {_cut_abs}\n"
                         f"* Primi {'onset' if cut_source == 'onset' else 'beat'} rilevati (s): {_ref_abs}"
                     )
+                    if _dj_debug:
+                        _cut_debug_line += (
+                            f"\n* [DEBUG] Ramo eseguito: {_dj_debug.get('branch')}"
+                            f" · sorgente: {_dj_debug.get('cut_source')}"
+                            f" · subdivisione: {_dj_debug.get('subdivision_mode')}"
+                            f" · punti disponibili: {_dj_debug.get('n_cut_time_source')}\n"
+                            f"* [DEBUG] Primi cut_points (pre-subdivisione): {_dj_debug.get('first_cut_points')}\n"
+                            f"* [DEBUG] Primi base_segments (durate, pre-subdivisione): {_dj_debug.get('first_base_segments')}\n"
+                            f"* [DEBUG] Primi slice_schedule (durate, post-subdivisione, pre-densita'): {_dj_debug.get('first_slice_schedule')}"
+                        )
 
                 report_it = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: FILE: {render_name}
@@ -2120,6 +2143,8 @@ def main():
             with c_d2:
                 st.download_button("Scarica Report", st.session_state.report_data,
                                    f"{st.session_state.render_name}_report.txt", key="down_t")
+            with st.expander("Mostra report a schermo (senza scaricare)"):
+                st.text(st.session_state.report_data)
 
 if __name__ == "__main__":
     main()

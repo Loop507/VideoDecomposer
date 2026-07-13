@@ -431,6 +431,23 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         # intervalli ri-ciclati da t=0 (che desincronizzavano i tagli dalla musica).
         beat_arr_sorted = sorted(_cut_time_source)
 
+        # Beat REALI (non onset), sempre — servono a "Adattiva al tempo" per
+        # calcolare il BPM istantaneo anche quando cut_source="onset": un
+        # intervallo tra due onset consecutivi puo' essere molto piu' corto
+        # di un beat vero (es. un sedicesimo), e usarlo direttamente come se
+        # fosse "un beat" produrrebbe un BPM istantaneo enorme e sballato,
+        # facendo collassare la subdivisione sempre sulla misura piu' fine.
+        _real_beats_sorted = sorted(beat_times) if beat_times else []
+
+        def _real_beat_duration_at(t):
+            """Durata del beat reale in cui cade il tempo assoluto t."""
+            if len(_real_beats_sorted) < 2:
+                return None
+            idx = bisect.bisect_right(_real_beats_sorted, t) - 1
+            idx = max(0, min(idx, len(_real_beats_sorted) - 2))
+            d = _real_beats_sorted[idx + 1] - _real_beats_sorted[idx]
+            return d if d > 0 else None
+
         # Intervallo medio "valido" tra beat consecutivi, usato come fallback
         # per coprire l'eventuale coda prima del primo beat e dopo l'ultimo.
         raw_intervals = [beat_arr_sorted[i+1] - beat_arr_sorted[i]
@@ -514,9 +531,16 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         #   "fixed"          -> ogni segmento usa beat_subdivision_factor
         #   "random_total"   -> fattore pescato a caso tra TUTTE le misure per ogni segmento
         #   "random_subset"  -> fattore pescato tra beat_subdivision_choices per ogni segmento
-        #   "tempo_adaptive" -> fattore calcolato dal BPM ISTANTANEO del segmento
-        #                       (base_segments[i]), non da un valore fisso o casuale:
-        #                       tratti veloci -> taglio fine, tratti piu' lenti -> misura piu' larga
+        #   "tempo_adaptive" -> fattore calcolato dal BPM ISTANTANEO reale del
+        #                       punto in cui ci si trova: con cut_source="beat"
+        #                       usa la durata del segmento stesso (che GIA' e'
+        #                       un intervallo beat); con cut_source="onset" usa
+        #                       invece la durata del beat REALE che contiene
+        #                       quell'istante (_real_beat_duration_at), non
+        #                       l'intervallo tra un onset e l'altro (che e'
+        #                       spesso una frazione di beat e produrrebbe un
+        #                       BPM istantaneo sballato, facendo collassare la
+        #                       subdivisione sempre sulla misura piu' fine).
         ALL_FACTORS = list(MEASURE_FACTORS.values())
         choices_pool = (beat_subdivision_choices or ALL_FACTORS)
         choices_pool = [f for f in choices_pool if f > 0]
@@ -534,8 +558,11 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             elif beat_subdivision_mode == "random_total":
                 sv = random.choice(ALL_FACTORS)
             elif beat_subdivision_mode == "tempo_adaptive":
-                _d = base_segments[i]
-                _local_bpm = 60.0 / _d if _d > 0 else None
+                if cut_source == "onset" and _real_beats_sorted:
+                    _d = _real_beat_duration_at(abs_t)
+                else:
+                    _d = base_segments[i]
+                _local_bpm = 60.0 / _d if _d else None
                 sv = local_bpm_to_subdivision_factor(_local_bpm)
             else:  # random_subset
                 sv = random.choice(choices_pool)
@@ -1325,13 +1352,12 @@ def main():
                     help="Tara crossfade, freeze, stutter e loop sul genere del brano caricato."
                 )
                 preset = VJ_PRESETS[vj_genre]
-                _subdiv_cap = next((m for m, v in MEASURE_FACTORS.items() if abs(v - preset["subdiv"]) < 1e-9), str(preset["subdiv"]))
                 st.caption(
                     f"_Preset {vj_genre}: loop x{preset['loop_reps']} · "
                     f"stutter {int(preset['stutter_prob']*100)}% · "
                     f"crossfade {preset['crossfade_ms']}ms · "
                     f"freeze {int(preset['freeze_prob']*100)}%/{preset['freeze_ms']}ms · "
-                    f"subdiv {_subdiv_cap}_"
+                    f"taglio: adattivo al BPM reale del brano_"
                 )
             else:
                 vj_genre = None
@@ -1450,11 +1476,20 @@ def main():
                 st.caption("_Durata slice determinata dai beat dell'audio._")
 
                 if auto_vj:
-                    # Automatico: la grana del taglio viene dal preset di genere,
-                    # non dai controlli manuali (che restano nascosti per coerenza
-                    # con "automatico" — vedi VJ_PRESETS[genere]["subdiv"]).
-                    beat_subdivision_mode = "fixed"
-                    beat_subdivision_factor = preset["subdiv"]
+                    # PRIMA: la grana del taglio veniva dal valore "subdiv" del
+                    # preset di genere (fixed) — una costante scelta a priori
+                    # per etichetta di genere, del tutto scollegata dal BPM
+                    # reale del brano caricato: un "Techno" a 90 bpm e uno a
+                    # 180 bpm ricevevano lo stesso taglio, perche' il preset
+                    # non guardava mai il BPM effettivo. ORA: subdivisione
+                    # "tempo_adaptive", che calcola il fattore dal BPM
+                    # ISTANTANEO reale rilevato punto per punto — il genere
+                    # continua comunque a caratterizzare loop/stutter/
+                    # crossfade/freeze (quelli si', per design, restano
+                    # costanti di stile), solo la grana del taglio ora segue
+                    # davvero il tempo del brano invece dell'etichetta scelta.
+                    beat_subdivision_mode = "tempo_adaptive"
+                    beat_subdivision_factor = preset["subdiv"]  # tenuto per compatibilita' report, non piu' usato per il taglio
                     beat_subdivision_choices = None
                     slice_density = 1.0
                     react_to_peaks = True

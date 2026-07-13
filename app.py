@@ -726,10 +726,15 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         # Non e' piu' un tetto fisso: nei tratti calmi/melodici la densita'
         # scende sotto la base scelta (il video "respira", meno tagli),
         # nei tratti percussivi densi sale fino a tagliare su ogni beat.
-        # Senza band_envelope (rhythmic_intensity=0) il minimo e' 0.5x la
-        # base — comunque piu' prudente del vecchio comportamento piatto,
-        # ma se non c'e' audio analizzato la modulazione e' nulla.
-        if band_envelope:
+        # ECCEZIONE IMPORTANTE: se la base e' gia' al 100% (utente ha scelto
+        # "taglia sempre", oppure siamo in Auto VJ dove slice_density=1.0 e
+        # non c'e' nessuno slider per accorgersene), la modulazione reattiva
+        # viene SALTATA — altrimenti "100%" smetteva silenziosamente di
+        # significare "sempre" nei tratti calmi (poteva scendere fino al
+        # 50%), e in Auto VJ l'utente non ha nessun modo di saperlo o
+        # correggerlo. Sotto al 100% la modulazione resta invece attiva
+        # com'era pensata: la densita' scelta e' un tetto, non un valore fisso.
+        if band_envelope and slice_density < 1.0:
             local_density = max(0.1, min(1.0, slice_density * (0.5 + 0.9 * rhythmic_intensity)))
         else:
             local_density = slice_density

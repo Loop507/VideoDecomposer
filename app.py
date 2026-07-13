@@ -2040,6 +2040,28 @@ def main():
                 st.session_state.preview_path = prev_v
                 st.session_state.render_name  = render_name
 
+                # --- Timestamp reali dei tagli, per verifica indipendente ---
+                # Invece di continuare a ipotizzare da remoto perche' un
+                # render "sembra" fuori tempo, esponiamo i numeri veri: i
+                # primi timestamp di taglio effettivamente usati (cumulativi
+                # da cut_schedule) affiancati ai beat/onset rilevati
+                # dall'analisi audio. Aprendo l'audio in un editor (es.
+                # Audacity) si puo' verificare a vista se questi timestamp
+                # cadono davvero sui picchi della forma d'onda.
+                _cut_debug_line = ""
+                if app_mode == "VJ Mode" and beat_slice_mode and cut_schedule:
+                    _abs_t = 0.0
+                    _cut_abs = []
+                    for _d in cut_schedule[:25]:
+                        _cut_abs.append(round(_abs_t, 3))
+                        _abs_t += _d
+                    _ref_source = vj_onset_times if (cut_source == "onset" and vj_onset_times) else beat_times
+                    _ref_abs = [round(x, 3) for x in sorted(_ref_source)[:25]] if _ref_source else []
+                    _cut_debug_line = (
+                        f"* Primi tagli effettivi (s): {_cut_abs}\n"
+                        f"* Primi {'onset' if cut_source == 'onset' else 'beat'} rilevati (s): {_ref_abs}"
+                    )
+
                 report_it = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: FILE: {render_name}
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
@@ -2054,6 +2076,7 @@ def main():
 {extra_log}
 {'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
 {'* Slice Automatico: ON — ' + str(len(vj_onset_times) if cut_source == 'onset' and vj_onset_times else beat_count) + (' onset rilevati' if cut_source == 'onset' else ' beat rilevati') if app_mode == 'VJ Mode' and beat_slice_mode and beat_times else ''}
+{_cut_debug_line}
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
 

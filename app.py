@@ -809,11 +809,24 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
             if random.random() < stutter_prob and loop_reps > 1:
                 combo = concatenate_videoclips([base_clip] * loop_reps, method="chain")
-                stutter_frames = min(n_frames * loop_reps, total_frames - frame_count)
-                combo = combo.set_duration(stutter_frames / fps)
+                # PRIMA: durava n_frames * loop_reps — cioe' DOPPIO/TRIPLO
+                # dello slot che il beat/onset aveva assegnato a quel
+                # segmento. frame_count avanzava piu' dell'audio (che
+                # continua al suo ritmo naturale, ignaro dello stutter), e
+                # ogni volta che scattava (dipende da un tiro random ad ogni
+                # segmento, quindi imprevedibile) tutto cio' che seguiva
+                # restava permanentemente fuori sync — esattamente il
+                # pattern "sembra a caso, senza un pattern preciso" quando
+                # stutter_prob non e' zero. ORA: la ripetizione viene
+                # compressa (speedx) nello STESSO slot temporale originale
+                # (n_frames) — stesso effetto visivo di stutter (il clip si
+                # ripete loop_reps volte, solo piu' veloce), ma il tempo
+                # totale consumato resta identico a quello non-stutterato,
+                # quindi l'audio non si disallinea mai.
+                combo = combo.speedx(loop_reps).set_duration(n_frames / fps)
                 all_clips.append(combo)
-                _register_clip(stutter_frames / fps)
-                frame_count += stutter_frames
+                _register_clip(n_frames / fps)
+                frame_count += n_frames
             else:
                 all_clips.append(base_clip)
                 _register_clip(seg)

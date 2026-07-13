@@ -426,8 +426,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
     # Costruisce la lista di durate slice: beat-driven, onset-driven o fissa
     _cut_time_source = onset_times if (cut_source == "onset" and onset_times) else beat_times
-    _debug_branch = "beat_slice" if (beat_slice_mode and _cut_time_source and len(_cut_time_source) > 1) else "manual_fallback"
-    cut_points = None  # popolato solo nel ramo beat_slice, usato poi per il debug report
+    cut_points = None  # None se si finisce nel ramo "slice manuale" (non beat-driven)
     if beat_slice_mode and _cut_time_source and len(_cut_time_source) > 1:
         # Punti di taglio ancorati ai beat REALI (timestamp assoluti), non a
         # intervalli ri-ciclati da t=0 (che desincronizzavano i tagli dalla musica).
@@ -891,17 +890,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         final = CompositeVideoClip(positioned, size=target_size).set_duration(min(t, duration))
     else:
         final = concatenate_in_batches(all_clips, method="chain").set_duration(duration)
-
-    _debug_info = {
-        "branch": _debug_branch,
-        "cut_source": cut_source,
-        "subdivision_mode": beat_subdivision_mode,
-        "n_cut_time_source": len(_cut_time_source) if _cut_time_source else 0,
-        "first_cut_points": (cut_points[:25] if cut_points else None),
-        "first_base_segments": (base_segments[:25] if 'base_segments' in locals() else None),
-        "first_slice_schedule": slice_schedule[:25] if slice_schedule else None,
-    }
-    return final, total_fragments, cut_schedule, _debug_info
+    return final, total_fragments, cut_schedule
 
 def decompose_audio_track(audio_clip, cut_schedule, total_duration):
     """
@@ -974,13 +963,13 @@ class VideoEngine:
         self.stats = {"fragments": 0, "sources": 0}
 
     def load_sources(self, paths, target_size=None):
-        # target_size = (w, h) del formato di export scelto (None = "Originale").
-        # Quando l'export NON e' "Originale", il video finale verra' comunque
-        # tagliato/scalato a quella dimensione (fit_to_size) — decodificare le
-        # sorgenti a piena risoluzione nativa (es. 4K) per poi scartare i pixel
-        # in piu' e' solo spreco di RAM, moltiplicato per ogni sorgente caricata
-        # (con 4 video insieme il carico si somma: candidato concreto per OOM
-        # su host con memoria limitata come il piano gratuito di Streamlit Cloud).
+        # target_size = (w, h) del formato di export scelto. Il video finale
+        # verra' comunque tagliato/scalato a quella dimensione (fit_to_size)
+        # — decodificare le sorgenti a piena risoluzione nativa (es. 4K) per
+        # poi scartare i pixel in piu' e' solo spreco di RAM, moltiplicato
+        # per ogni sorgente caricata (con piu' video insieme il carico si
+        # somma: candidato concreto per OOM su host con memoria limitata
+        # come il piano gratuito di Streamlit Cloud).
         #
         # ATTENZIONE: MoviePy, se target_resolution specifica SIA altezza CHE
         # larghezza, forza quell'esatta dimensione senza rispettare l'aspect
@@ -1669,28 +1658,17 @@ def main():
                         _factors_est = beat_subdivision_choices or [1.0]
                     _mean_fpb = sum(1.0 / f for f in _factors_est) / len(_factors_est)
                     _est_fragments = int(_beats_est * slice_density * _mean_fpb)
-                    # Con formato "Originale" le sorgenti restano a risoluzione
-                    # NATIVA (il fix di decodifica ridotta si applica solo agli
-                    # altri formati, apposta, per non alterare l'output di
-                    # "Originale"): a parita' di frammenti il rischio di OOM e'
-                    # piu' alto, quindi qui la soglia di avviso e' piu' bassa.
-                    _is_originale = st.session_state.get("formato_select", "Originale") == "Originale"
-                    _warn_th = 600 if _is_originale else 1200
-                    _caption_th = 300 if _is_originale else 500
-                    if _est_fragments > _warn_th:
+                    if _est_fragments > 1200:
                         st.warning(
                             f"⚠️ Con questi parametri sono previsti circa **{_est_fragments} "
-                            f"frammenti** per {_dur_est}s di durata finale"
-                            + (" **con formato Originale** (sorgenti a piena risoluzione nativa, "
-                               "senza lo sconto di memoria degli altri formati)" if _is_originale else "")
-                            + ". Su brani lunghi (3-4 min), tante sorgenti caricate insieme o "
-                              "subdivisioni molto fitte, tanti frammenti rallentano parecchio il "
-                              "rendering e possono causare un riavvio dell'app per esaurimento "
-                              "memoria. Se noti l'app lenta o che si riavvia, prova una misura "
-                              "piu' larga (es. 1/4 invece di 1/16), abbassa la densita' slice, "
-                              "o passa a un formato diverso da 'Originale'."
+                            f"frammenti** per {_dur_est}s di durata finale. Su brani lunghi "
+                            f"(3-4 min), tante sorgenti caricate insieme o subdivisioni molto "
+                            f"fitte, tanti frammenti rallentano parecchio il rendering e possono "
+                            f"causare un riavvio dell'app per esaurimento memoria. Se noti l'app "
+                            f"lenta o che si riavvia, prova una misura piu' larga (es. 1/4 invece "
+                            f"di 1/16) o abbassa la densita' slice."
                         )
-                    elif _est_fragments > _caption_th:
+                    elif _est_fragments > 500:
                         st.caption(f"_Frammenti previsti: ~{_est_fragments}._")
 
             st.markdown("---")
@@ -1795,11 +1773,12 @@ def main():
         fps    = st.selectbox("FPS", [24, 30])
         formato_label = st.selectbox(
             "Formato",
-            ["Originale", "16:9 (1280x720)", "9:16 (720x1280)", "1:1 (720x720)"],
+            ["16:9 (1280x720)", "9:16 (720x1280)", "1:1 (720x720)"],
             key="formato_select",
-            help="Originale = usa la risoluzione del primo video caricato (V1), come sempre. "
-                 "Gli altri formati fanno crop-to-fill: scalano e ritagliano al centro, senza "
-                 "deformare l'immagine e senza barre nere."
+            help="Crop-to-fill: scala e ritaglia al centro, senza deformare l'immagine "
+                 "e senza barre nere. Le sorgenti vengono decodificate gia' vicino a "
+                 "questa risoluzione invece che a piena risoluzione nativa — piu' "
+                 "leggero e meno a rischio OOM su video lunghi o piu' sorgenti insieme."
         )
         export_size = EXPORT_SIZES.get(formato_label)
         st.markdown("---")
@@ -1885,7 +1864,6 @@ def main():
             tmp_audio_path = None
             total_frags   = 0
             cut_schedule  = None
-            _dj_debug     = None
 
             try:
                 # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice.
@@ -1948,7 +1926,7 @@ def main():
                                  f"* Geometria: {scan_dir}\n"
                                  f"* Formato: {formato_label}")
                 else:
-                    final, total_frags, cut_schedule, _dj_debug = generate_dj_remix(
+                    final, total_frags, cut_schedule = generate_dj_remix(
                         engine.video_clips, run_durata, fps,
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
                         beat_slice_mode=beat_slice_mode,
@@ -2071,38 +2049,6 @@ def main():
                 st.session_state.preview_path = prev_v
                 st.session_state.render_name  = render_name
 
-                # --- Timestamp reali dei tagli, per verifica indipendente ---
-                # Invece di continuare a ipotizzare da remoto perche' un
-                # render "sembra" fuori tempo, esponiamo i numeri veri: i
-                # primi timestamp di taglio effettivamente usati (cumulativi
-                # da cut_schedule) affiancati ai beat/onset rilevati
-                # dall'analisi audio. Aprendo l'audio in un editor (es.
-                # Audacity) si puo' verificare a vista se questi timestamp
-                # cadono davvero sui picchi della forma d'onda.
-                _cut_debug_line = ""
-                if app_mode == "VJ Mode" and beat_slice_mode and cut_schedule:
-                    _abs_t = 0.0
-                    _cut_abs = []
-                    for _d in cut_schedule[:25]:
-                        _cut_abs.append(round(_abs_t, 3))
-                        _abs_t += _d
-                    _ref_source = vj_onset_times if (cut_source == "onset" and vj_onset_times) else beat_times
-                    _ref_abs = [round(x, 3) for x in sorted(_ref_source)[:25]] if _ref_source else []
-                    _cut_debug_line = (
-                        f"* Primi tagli effettivi (s): {_cut_abs}\n"
-                        f"* Primi {'onset' if cut_source == 'onset' else 'beat'} rilevati (s): {_ref_abs}"
-                    )
-                    if _dj_debug:
-                        _cut_debug_line += (
-                            f"\n* [DEBUG] Ramo eseguito: {_dj_debug.get('branch')}"
-                            f" · sorgente: {_dj_debug.get('cut_source')}"
-                            f" · subdivisione: {_dj_debug.get('subdivision_mode')}"
-                            f" · punti disponibili: {_dj_debug.get('n_cut_time_source')}\n"
-                            f"* [DEBUG] Primi cut_points (pre-subdivisione): {_dj_debug.get('first_cut_points')}\n"
-                            f"* [DEBUG] Primi base_segments (durate, pre-subdivisione): {_dj_debug.get('first_base_segments')}\n"
-                            f"* [DEBUG] Primi slice_schedule (durate, post-subdivisione, pre-densita'): {_dj_debug.get('first_slice_schedule')}"
-                        )
-
                 report_it = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: FILE: {render_name}
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
@@ -2117,7 +2063,6 @@ def main():
 {extra_log}
 {'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
 {'* Slice Automatico: ON — ' + str(len(vj_onset_times) if cut_source == 'onset' and vj_onset_times else beat_count) + (' onset rilevati' if cut_source == 'onset' else ' beat rilevati') if app_mode == 'VJ Mode' and beat_slice_mode and beat_times else ''}
-{_cut_debug_line}
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
 
@@ -2161,8 +2106,6 @@ def main():
             with c_d2:
                 st.download_button("Scarica Report", st.session_state.report_data,
                                    f"{st.session_state.render_name}_report.txt", key="down_t")
-            with st.expander("Mostra report a schermo (senza scaricare)"):
-                st.text(st.session_state.report_data)
 
 if __name__ == "__main__":
     main()

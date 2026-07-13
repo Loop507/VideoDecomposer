@@ -46,7 +46,7 @@ def fit_to_size(clip, target_size):
 
 
 # --- ANALISI AUDIO ---
-def analyze_audio(audio_file, duration):
+def analyze_audio(audio_file, duration, fast_mode=False):
     orig_name = getattr(audio_file, "name", "") or ""
     suffix = os.path.splitext(orig_name)[1].lower()
     if suffix not in (".mp3", ".wav"):
@@ -117,9 +117,21 @@ def analyze_audio(audio_file, duration):
         # (melodia, voce, pad) da quella percussiva (batteria) e misuriamo
         # l'energia della sola parte armonica: cosi' il motore puo' distinguere
         # "sta suonando la batteria" da "sta cantando/suonando una melodia".
-        y_harm, _y_perc = librosa.effects.hpss(y)
-        harm_rms = librosa.feature.rms(y=y_harm)[0]
-        melody_norm = harm_rms / (harm_rms.max() + 1e-6)
+        #
+        # HPSS e' di gran lunga il passaggio piu' lento di tutta l'analisi
+        # (separazione su tutto il segnale). Con fast_mode=True lo saltiamo
+        # del tutto: si perde la distinzione fine "e' una voce, non un
+        # colpo" nel rilevamento accenti (react_to_peaks/rhythmic_intensity
+        # diventano leggermente meno precisi su brani molto melodici), ma
+        # l'analisi diventa sensibilmente piu' veloce — utile su render
+        # ripetuti in fase di prova, o quando la precisione dell'accento
+        # non e' la priorita'.
+        if fast_mode:
+            melody_norm = np.zeros_like(rms_norm)
+        else:
+            y_harm, _y_perc = librosa.effects.hpss(y)
+            harm_rms = librosa.feature.rms(y=y_harm)[0]
+            melody_norm = harm_rms / (harm_rms.max() + 1e-6)
 
         # Allinea le lunghezze (STFT e RMS possono differire di 1 frame)
         n_common = min(len(rms_norm), len(low_norm), len(mid_norm), len(high_norm), len(melody_norm))
@@ -1269,8 +1281,24 @@ def main():
             if _manual_bpm > 0:
                 detected_bpm = _manual_bpm
                 st.session_state["detected_bpm"] = _manual_bpm
+            fast_audio_analysis = st.toggle(
+                "Analisi audio veloce",
+                value=False,
+                key="fast_audio_analysis",
+                help=(
+                    "Salta la separazione armonica/percussiva (HPSS) — di gran "
+                    "lunga il passaggio piu' lento dell'analisi audio. Rende il "
+                    "rendering sensibilmente piu' veloce, a costo di perdere un "
+                    "affinamento fine: distinguere una voce/melodia da un vero "
+                    "colpo di batteria nel rilevamento accenti (react_to_peaks, "
+                    "rhythmic_intensity). Su brani molto percussivi con poca "
+                    "melodia il risultato e' quasi identico; su brani cantati/"
+                    "melodici puo' rendere gli accenti leggermente meno precisi."
+                )
+            )
         else:
             detected_bpm = None
+            fast_audio_analysis = False
         st.divider()
         st.subheader("Modalita'")
         app_mode = st.radio("", ["Decompose", "VJ Mode"], horizontal=True)
@@ -1872,7 +1900,7 @@ def main():
                 # subdivisione...) non si rifa' da capo beat-tracking/HPSS,
                 # che e' il pezzo piu' lento.
                 _audio_cache_key = (
-                    getattr(audio_file, "name", None), getattr(audio_file, "size", None), round(durata, 2)
+                    getattr(audio_file, "name", None), getattr(audio_file, "size", None), round(durata, 2), fast_audio_analysis
                 ) if audio_file else None
 
                 if app_mode == "Decompose" and beat_sync and audio_file:
@@ -1880,7 +1908,7 @@ def main():
                         beat_times, rms_envelope = st.session_state["_audio_cache"]
                     else:
                         p_bar.progress(0.05, text="Analisi audio...")
-                        beat_times, rms_envelope, _, _ = analyze_audio(audio_file, durata)
+                        beat_times, rms_envelope, _, _ = analyze_audio(audio_file, durata, fast_mode=fast_audio_analysis)
                         st.session_state["_audio_cache_key"] = _audio_cache_key
                         st.session_state["_audio_cache"] = (beat_times, rms_envelope)
                     beat_count = len(beat_times)
@@ -1890,7 +1918,7 @@ def main():
                     else:
                         p_bar.progress(0.05, text="Analisi beat...")
                         audio_file.seek(0)
-                        beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times = analyze_audio(audio_file, durata)
+                        beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times = analyze_audio(audio_file, durata, fast_mode=fast_audio_analysis)
                         audio_file.seek(0)  # reset per eventuale uso audio custom dopo
                         st.session_state["_vj_audio_cache_key"] = _audio_cache_key
                         st.session_state["_vj_audio_cache"] = (beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times)

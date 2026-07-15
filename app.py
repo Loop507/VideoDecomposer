@@ -45,6 +45,69 @@ def fit_to_size(clip, target_size):
     return resized.crop(x1=x1, y1=y1, width=tw, height=th)
 
 
+def apply_beat_color_react(clip, band_envelope, duration, intensity):
+    """
+    Tint colore additivo mappato sulle bande di frequenza: bassi->rosso,
+    medi->verde, alti->blu (mappatura sinestetica classica, leggibile:
+    l'occhio impara ad associare "rosso che pulsa" a "sta arrivando la
+    cassa"). Non e' un on/off: 'intensity' (0-1, dallo slider) scala quanto
+    il tint incide, cosi' a valori bassi il video "sente" la musica senza
+    diventare un video-clip perfettamente quadrato — coerente con
+    l'estetica Glitch Brutalista, dove il quasi-sync conta piu' del sync
+    perfetto.
+
+    band_envelope : dict {"low","mid","high",...} su griglia fissa (stessa
+                    prodotta da analyze_audio), coprente 'duration' secondi.
+    intensity     : 0 = nessun effetto (ritorna il clip intatto), 1 = tint
+                    al massimo. Scala lineare, non soglia: anche a intensity
+                    bassa l'effetto e' presente ma discreto.
+    """
+    if intensity <= 0 or not band_envelope:
+        return clip
+
+    low  = band_envelope.get("low")
+    mid  = band_envelope.get("mid")
+    high = band_envelope.get("high")
+    if not low or not mid or not high:
+        return clip
+
+    n = len(low)
+    step = duration / n if n else 0.05
+
+    def _at(arr, t):
+        idx = int(t / step) if step > 0 else 0
+        idx = max(0, min(idx, len(arr) - 1))
+        return arr[idx]
+
+    # Soglia sotto la quale il tint sarebbe visivamente impercettibile:
+    # saltiamo interamente frame astype/clip/cast su passaggi quieti
+    # (silenzio, break, codetta) invece di applicare un'operazione
+    # sull'intero frame per un risultato che non si vedrebbe comunque.
+    _SKIP_EPS = 2.0  # su scala 0-255
+
+    # Additivo (non moltiplicativo): a intensity bassa il colore resta
+    # riconoscibile ma non lava via i toni originali del video, a intensity
+    # alta il tint domina — il clamp finale evita overflow visibile.
+    # int16 invece di float32: stessa capacita' di rappresentare somme
+    # negative/oltre-255 prima del clip, meta' della banda passante in
+    # memoria per frame (misurato: ~2x piu' veloce a 720p) — nessuna nuova
+    # dipendenza (niente cv2), solo numpy che il progetto usa gia'.
+    def _color_fx(get_frame, t):
+        r = _at(low,  t)
+        g = _at(mid,  t)
+        b = _at(high, t)
+        tint = np.array([r, g, b], dtype=np.float32) * 255.0 * intensity
+        if np.abs(tint).max() < _SKIP_EPS:
+            return get_frame(t)
+        frame = get_frame(t)
+        out = frame.astype(np.int16)
+        out += tint.astype(np.int16)
+        np.clip(out, 0, 255, out=out)
+        return out.astype(np.uint8)
+
+    return clip.fl(_color_fx)
+
+
 # --- ANALISI AUDIO ---
 def analyze_audio(audio_file, duration, fast_mode=False):
     orig_name = getattr(audio_file, "name", "") or ""
@@ -1863,6 +1926,15 @@ def main():
                 with col_v2:
                     vol_original = st.slider("Volume audio originale", 0, 200, 100, step=5) / 100.0
 
+            color_react_amount = st.slider(
+                "Reattivita' colore al beat", 0, 100, 0, step=5,
+                help="0 = nessun effetto · valori bassi (10-30%) = il video 'sente' "
+                     "la musica restando discreto · 100% = tint colore al massimo. "
+                     "Mappa bassi/medi/alti su rosso/verde/blu (overlay additivo)."
+            ) / 100.0
+        else:
+            color_react_amount = 0.0
+
         st.markdown("---")
 
         do_final = st.button("AVVIA RENDERING", use_container_width=True)
@@ -1884,6 +1956,7 @@ def main():
             p_bar = st.progress(0, text="Avvio...")
             beat_times      = None
             rms_envelope    = None
+            decompose_band_envelope = None
             vj_rms_envelope = None
             vj_band_envelope = None
             vj_onset_times  = None
@@ -1903,16 +1976,16 @@ def main():
                     getattr(audio_file, "name", None), getattr(audio_file, "size", None), round(durata, 2), fast_audio_analysis
                 ) if audio_file else None
 
-                if app_mode == "Decompose" and beat_sync and audio_file:
+                if app_mode == "Decompose" and (beat_sync or color_react_amount > 0) and audio_file:
                     if _audio_cache_key and st.session_state.get("_audio_cache_key") == _audio_cache_key:
-                        beat_times, rms_envelope = st.session_state["_audio_cache"]
+                        beat_times, rms_envelope, decompose_band_envelope = st.session_state["_audio_cache"]
                     else:
                         p_bar.progress(0.05, text="Analisi audio...")
-                        beat_times, rms_envelope, _, _ = analyze_audio(audio_file, durata, fast_mode=fast_audio_analysis)
+                        beat_times, rms_envelope, decompose_band_envelope, _ = analyze_audio(audio_file, durata, fast_mode=fast_audio_analysis)
                         st.session_state["_audio_cache_key"] = _audio_cache_key
-                        st.session_state["_audio_cache"] = (beat_times, rms_envelope)
+                        st.session_state["_audio_cache"] = (beat_times, rms_envelope, decompose_band_envelope)
                     beat_count = len(beat_times)
-                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat) and audio_file:
+                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat or color_react_amount > 0) and audio_file:
                     if _audio_cache_key and st.session_state.get("_vj_audio_cache_key") == _audio_cache_key:
                         beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times = st.session_state["_vj_audio_cache"]
                     else:
@@ -2008,6 +2081,15 @@ def main():
                                   if audio_mix_mode in ("mix", "mix_decomposed") else "") + "\n"
                                  f"* Reattivita' multi-banda: {'ON' if vj_band_envelope else 'OFF'}\n"
                                  f"* Formato: {formato_label}")
+
+                # --- Colore reattivo al beat (bassi/medi/alti -> RGB) ---
+                # Applicato sul clip video gia' composto, prima del mix
+                # audio: e' un post-processing indipendente dalla logica di
+                # taglio, quindi non serve toccare generate_dj_remix/engine.
+                _color_band_env = decompose_band_envelope if app_mode == "Decompose" else vj_band_envelope
+                if color_react_amount > 0 and _color_band_env:
+                    final = apply_beat_color_react(final, _color_band_env, run_durata, color_react_amount)
+                    extra_log += f"\n* Colore reattivo al beat: {int(color_react_amount*100)}%"
 
                 # Audio custom / mix
                 if use_custom_audio and audio_file:

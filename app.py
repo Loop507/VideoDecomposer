@@ -134,9 +134,13 @@ def apply_beat_saturation_react(clip, band_envelope, duration, intensity, profil
 
     band_envelope : dict {"low","mid","high"} su griglia fissa, come per
                     apply_beat_color_react. Qui le tre bande vengono
-                    mediate in un'unica energia complessiva (non mappate
-                    a canali separati, perche' la saturazione e' uno
-                    scalare, non tre colori).
+                    combinate con MAX (non media): ogni banda e'
+                    normalizzata al proprio massimo indipendente, quindi
+                    raramente sono tutte alte insieme (un bassi forte non
+                    coincide sempre con un picco di alti) — mediandole il
+                    risultato resta quasi sempre basso e il boost si sente
+                    a stento. Con MAX basta che UNA banda spicchi (es. solo
+                    il bassi) perche' il boost scatti visibilmente.
     intensity     : 0 = nessun effetto, 1 = boost massimo (fattore fino a
                     circa 3x nei picchi di energia piena).
     profile_acc   : lista mutabile [float] opzionale, stesso scopo che in
@@ -158,7 +162,7 @@ def apply_beat_saturation_react(clip, band_envelope, duration, intensity, profil
     def _energy_at(t):
         idx = int(t / step) if step > 0 else 0
         idx = max(0, min(idx, n - 1))
-        return (low[idx] + mid[idx] + high[idx]) / 3.0
+        return max(low[idx], mid[idx], high[idx])
 
     _SKIP_EPS = 0.01  # energia sotto la quale il boost sarebbe impercettibile
 

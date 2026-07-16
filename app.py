@@ -45,7 +45,7 @@ def fit_to_size(clip, target_size):
     return resized.crop(x1=x1, y1=y1, width=tw, height=th)
 
 
-def apply_beat_color_react(clip, band_envelope, duration, intensity):
+def apply_beat_color_react(clip, band_envelope, duration, intensity, profile_acc=None):
     """
     Tint colore additivo mappato sulle bande di frequenza: bassi->rosso,
     medi->verde, alti->blu (mappatura sinestetica classica, leggibile:
@@ -61,6 +61,12 @@ def apply_beat_color_react(clip, band_envelope, duration, intensity):
     intensity     : 0 = nessun effetto (ritorna il clip intatto), 1 = tint
                     al massimo. Scala lineare, non soglia: anche a intensity
                     bassa l'effetto e' presente ma discreto.
+    profile_acc   : lista mutabile [float] opzionale; se passata, accumula i
+                    secondi REALMENTE spesi nella sola aritmetica del tint
+                    (esclusa la decodifica del frame, che non e' opera
+                    nostra) durante write_videofile. Serve solo a
+                    profilare dove va il tempo di un render vero, non ha
+                    effetto sul risultato.
     """
     if intensity <= 0 or not band_envelope:
         return clip
@@ -100,10 +106,14 @@ def apply_beat_color_react(clip, band_envelope, duration, intensity):
         if np.abs(tint).max() < _SKIP_EPS:
             return get_frame(t)
         frame = get_frame(t)
+        _t0 = time.perf_counter() if profile_acc is not None else None
         out = frame.astype(np.int16)
         out += tint.astype(np.int16)
         np.clip(out, 0, 255, out=out)
-        return out.astype(np.uint8)
+        result = out.astype(np.uint8)
+        if profile_acc is not None:
+            profile_acc[0] += time.perf_counter() - _t0
+        return result
 
     return clip.fl(_color_fx)
 
@@ -1256,6 +1266,17 @@ _REPORT_IT_EN = [
     ("random totale", "full random"),
     ("random in range", "random in range"),
     ("beat rilevati", "beats detected"),
+    ("onset rilevati", "onsets detected"),
+    ("Colore reattivo al beat", "Beat-reactive Color"),
+    ("PROFILAZIONE RENDER", "RENDER PROFILING"),
+    ("totale", "total"),
+    ("Analisi Audio", "Audio Analysis"),
+    ("Caricamento Sorgenti", "Loading Sources"),
+    ("Costruzione Sequenza", "Building Sequence"),
+    ("Mix Audio", "Audio Mix"),
+    ("Encoding Finale (decode+encode)", "Final Encoding (decode+encode)"),
+    ("di cui Tint Colore", "of which Color Tint"),
+    ("Encoding Preview", "Preview Encoding"),
     ("Sorgenti Video", "Video Sources"),
     ("Frammenti Generati", "Fragments Generated"),
     ("Quote Fisse", "Fixed Quotas"),
@@ -1965,6 +1986,8 @@ def main():
             tmp_audio_path = None
             total_frags   = 0
             cut_schedule  = None
+            _prof = {}  # profilazione render: {stage: secondi}
+            _t_stage = time.perf_counter()
 
             try:
                 # Analisi audio: Decompose beat sync OPPURE VJ Mode beat slice.
@@ -1997,8 +2020,14 @@ def main():
                         st.session_state["_vj_audio_cache"] = (beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times)
                     beat_count = len(beat_times)
 
+                _prof["Analisi Audio"] = time.perf_counter() - _t_stage
+                _t_stage = time.perf_counter()
+
                 engine = VideoEngine()
                 engine.load_sources(paths, target_size=export_size_run)
+
+                _prof["Caricamento Sorgenti"] = time.perf_counter() - _t_stage
+                _t_stage = time.perf_counter()
 
                 if app_mode == "Decompose":
                     if mix_mode == "Quote Fisse":
@@ -2082,14 +2111,22 @@ def main():
                                  f"* Reattivita' multi-banda: {'ON' if vj_band_envelope else 'OFF'}\n"
                                  f"* Formato: {formato_label}")
 
+                _prof["Costruzione Sequenza"] = time.perf_counter() - _t_stage
+
                 # --- Colore reattivo al beat (bassi/medi/alti -> RGB) ---
                 # Applicato sul clip video gia' composto, prima del mix
                 # audio: e' un post-processing indipendente dalla logica di
                 # taglio, quindi non serve toccare generate_dj_remix/engine.
+                # (i secondi REALI spesi qui dentro vengono misurati durante
+                # write_videofile, non ora: il clip e' lazy, il tint viene
+                # eseguito frame per frame solo quando si scrive il file)
+                _color_tint_acc = [0.0]
                 _color_band_env = decompose_band_envelope if app_mode == "Decompose" else vj_band_envelope
                 if color_react_amount > 0 and _color_band_env:
-                    final = apply_beat_color_react(final, _color_band_env, run_durata, color_react_amount)
+                    final = apply_beat_color_react(final, _color_band_env, run_durata, color_react_amount, profile_acc=_color_tint_acc)
                     extra_log += f"\n* Colore reattivo al beat: {int(color_react_amount*100)}%"
+
+                _t_stage = time.perf_counter()
 
                 # Audio custom / mix
                 if use_custom_audio and audio_file:
@@ -2123,11 +2160,29 @@ def main():
                     pass  # mantiene l'audio originale già presente in final
 
                 out_v = os.path.join(tempfile.gettempdir(), f"render_{random.randint(0,9999)}.mp4")
+                _prof["Mix Audio"] = time.perf_counter() - _t_stage
+                _t_stage = time.perf_counter()
+
                 p_bar.progress(0.75, text="Scrittura video...")
                 final.write_videofile(out_v, codec="libx264", audio_codec="aac",
                                       preset="ultrafast", logger=None)
                 final.close()
+
+                # Il write_videofile qui sopra e' dove TUTTO il lavoro lazy
+                # dei clip viene davvero eseguito (decodifica sorgenti,
+                # crossfade, e anche il tint colore frame per frame): il
+                # tempo misurato include quindi decode+encode+tint insieme.
+                # _color_tint_acc[0] isola quanto di quel totale e' SOLO
+                # l'aritmetica del tint (esclusa la decodifica), per capire
+                # quanto pesa davvero sul totale invece di supporlo.
+                # (misurato PRIMA della sleep() di sicurezza qui sotto, che
+                # e' un'attesa fissa per il flush su disco e non lavoro vero)
+                _t_encode_final = time.perf_counter() - _t_stage
+                _prof["Encoding Finale (decode+encode)"] = _t_encode_final - _color_tint_acc[0]
+                if _color_tint_acc[0] > 0:
+                    _prof["  di cui Tint Colore"] = _color_tint_acc[0]
                 time.sleep(1.5)
+                _t_stage = time.perf_counter()
 
                 # --- Anteprima 480p ---
                 # NON si riparte da 'final' (l'intera catena di frammenti,
@@ -2147,6 +2202,7 @@ def main():
                                           preset="ultrafast", logger=None)
                 prev_clip.close()
                 prev_src.close()
+                _prof["Encoding Preview"] = time.perf_counter() - _t_stage
                 time.sleep(0.5)
                 p_bar.progress(1.0, text="Pronto!")
 
@@ -2158,6 +2214,16 @@ def main():
                 st.session_state.video_path   = out_v
                 st.session_state.preview_path = prev_v
                 st.session_state.render_name  = render_name
+
+                _prof_total = sum(v for k, v in _prof.items() if not k.startswith("  "))
+                _prof_lines = "\n".join(
+                    f"* {k}: {v:.1f}s ({v / _prof_total * 100:.0f}%)" if _prof_total > 0 else f"* {k}: {v:.1f}s"
+                    for k, v in _prof.items()
+                )
+                profiling_log = (
+                    f":: PROFILAZIONE RENDER (totale {_prof_total:.1f}s):\n{_prof_lines}"
+                )
+                st.session_state.profiling_log = profiling_log
 
                 report_it = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: FILE: {render_name}
@@ -2173,6 +2239,8 @@ def main():
 {extra_log}
 {'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
 {'* Slice Automatico: ON — ' + str(len(vj_onset_times) if cut_source == 'onset' and vj_onset_times else beat_count) + (' onset rilevati' if cut_source == 'onset' else ' beat rilevati') if app_mode == 'VJ Mode' and beat_slice_mode and beat_times else ''}
+
+{profiling_log}
 
 "Non e' montaggio. E' anatomia di un segnale corrotto."
 

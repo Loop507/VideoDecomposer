@@ -1334,6 +1334,8 @@ _REPORT_IT_EN = [
     ("beat rilevati", "beats detected"),
     ("onset rilevati", "onsets detected"),
     ("Colore reattivo al beat", "Beat-reactive Color"),
+    ("(manuale)", "(manual)"),
+    ("(rilevato)", "(detected)"),
     ("Saturazione reattiva al beat", "Beat-reactive Saturation"),
     ("di cui Boost Saturazione", "of which Saturation Boost"),
     ("PROFILAZIONE RENDER", "RENDER PROFILING"),
@@ -2109,18 +2111,29 @@ def main():
                 _t_stage = time.perf_counter()
 
                 if app_mode == "Decompose":
+                    # generate()/generate_fixed_quota() non hanno un flag
+                    # 'beat_sync' interno: se beat_times/rms_envelope non
+                    # sono vuoti, i tagli e le strisce si sincronizzano
+                    # all'audio a prescindere. Da quando l'analisi audio
+                    # puo' partire anche solo per colore/saturazione (senza
+                    # beat_sync attivo), vanno passati None esplicitamente
+                    # se l'utente NON ha richiesto il beat sync — altrimenti
+                    # taglio E strisce si riattiverebbero da soli in
+                    # silenzio insieme al colore.
+                    _beat_times_for_cuts = beat_times if beat_sync else None
+                    _rms_for_stripes = rms_envelope if beat_sync else None
                     if mix_mode == "Quote Fisse":
                         final, cut_schedule = engine.generate_fixed_quota(
                             quotas, r_a, r_b, r_rand, run_durata, fps,
                             s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                            beat_times=beat_times, rms_envelope=rms_envelope,
+                            beat_times=_beat_times_for_cuts, rms_envelope=_rms_for_stripes,
                             export_size=export_size_run
                         )
                     else:
                         final, cut_schedule = engine.generate(
                             weights, r_a, r_b, r_rand, run_durata, fps,
                             s_a, s_b, s_rand, scan_dir, p_bar, use_scan,
-                            beat_times=beat_times, rms_envelope=rms_envelope,
+                            beat_times=_beat_times_for_cuts, rms_envelope=_rms_for_stripes,
                             export_size=export_size_run
                         )
                     total_frags = engine.stats["fragments"]
@@ -2135,13 +2148,25 @@ def main():
                                  f"* Geometria: {scan_dir}\n"
                                  f"* Formato: {formato_label}")
                 else:
+                    # generate_dj_remix usa beat_times SOLO se
+                    # beat_slice_mode=True (corretto, gia' un parametro
+                    # esplicito) — ma la modulazione di slice_density e il
+                    # burst-override di react_to_peaks reagiscono alla sola
+                    # PRESENZA di rms/band_envelope, non a un flag dedicato.
+                    # Da quando l'analisi puo' partire anche solo per
+                    # colore/saturazione, vanno passati None se l'utente non
+                    # ha acceso beat_slice_mode ne' freeze_on_beat — sennò
+                    # accendere il colore farebbe scattare in silenzio anche
+                    # densita' di taglio reattiva e burst override.
+                    _vj_rms_for_engine = vj_rms_envelope if (beat_slice_mode or freeze_on_beat) else None
+                    _vj_band_for_engine = vj_band_envelope if (beat_slice_mode or freeze_on_beat) else None
                     final, total_frags, cut_schedule = generate_dj_remix(
                         engine.video_clips, run_durata, fps,
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
                         beat_slice_mode=beat_slice_mode,
                         beat_times=beat_times,
-                        rms_envelope=vj_rms_envelope,
-                        band_envelope=vj_band_envelope,
+                        rms_envelope=_vj_rms_for_engine,
+                        band_envelope=_vj_band_for_engine,
                         crossfade_dur=crossfade_dur,
                         freeze_on_beat=freeze_on_beat,
                         freeze_prob=freeze_prob,
@@ -2187,7 +2212,7 @@ def main():
                                  f"* Audio Mix: {AUDIO_MIX_LABELS.get(audio_mix_mode, audio_mix_mode)}" +
                                  (f" (musica {int(vol_music*100)}% / originale {int(vol_original*100)}%)"
                                   if audio_mix_mode in ("mix", "mix_decomposed") else "") + "\n"
-                                 f"* Reattivita' multi-banda: {'ON' if vj_band_envelope else 'OFF'}\n"
+                                 f"* Reattivita' multi-banda: {'ON' if _vj_band_for_engine else 'OFF'}\n"
                                  f"* Formato: {formato_label}")
 
                 _prof["Costruzione Sequenza"] = time.perf_counter() - _t_stage
@@ -2310,6 +2335,11 @@ def main():
                 )
                 st.session_state.profiling_log = profiling_log
 
+                _bpm_line = ""
+                if detected_bpm:
+                    _bpm_is_manual = st.session_state.get("manual_bpm_input", 0.0) > 0
+                    _bpm_line = f"* BPM: {detected_bpm:.1f}" + (" (manuale)" if _bpm_is_manual else " (rilevato)")
+
                 report_it = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: FILE: {render_name}
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
@@ -2321,6 +2351,7 @@ def main():
 * Sorgenti Video: {engine.stats['sources']}
 * Frammenti Generati: {total_frags}
 * Modalita': {mix_log}
+{_bpm_line}
 {extra_log}
 {'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
 {'* Slice Automatico: ON — ' + str(len(vj_onset_times) if cut_source == 'onset' and vj_onset_times else beat_count) + (' onset rilevati' if cut_source == 'onset' else ' beat rilevati') if app_mode == 'VJ Mode' and beat_slice_mode and beat_times else ''}

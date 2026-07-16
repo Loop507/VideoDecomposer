@@ -118,6 +118,68 @@ def apply_beat_color_react(clip, band_envelope, duration, intensity, profile_acc
     return clip.fl(_color_fx)
 
 
+_LUMA_WEIGHTS = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+
+def apply_beat_saturation_react(clip, band_envelope, duration, intensity, profile_acc=None):
+    """
+    Boost di SATURAZIONE, non tint: a differenza di apply_beat_color_react
+    (che sovrappone un colore additivo sopra il video), questa funzione
+    intensifica/spegne i colori GIA' presenti nel video in base
+    all'energia della musica — i toni restano gli stessi, cambia solo
+    quanto sono accesi. Tecnica classica ed economica: interpolare tra il
+    frame e la sua versione in scala di grigi (luminosita' pesata
+    percettivamente), con un fattore > 1 che allontana dal grigio invece
+    di avvicinarlo (l'opposto di una desaturazione).
+
+    band_envelope : dict {"low","mid","high"} su griglia fissa, come per
+                    apply_beat_color_react. Qui le tre bande vengono
+                    mediate in un'unica energia complessiva (non mappate
+                    a canali separati, perche' la saturazione e' uno
+                    scalare, non tre colori).
+    intensity     : 0 = nessun effetto, 1 = boost massimo (fattore fino a
+                    circa 3x nei picchi di energia piena).
+    profile_acc   : lista mutabile [float] opzionale, stesso scopo che in
+                    apply_beat_color_react — misura i secondi REALI spesi
+                    qui dentro durante write_videofile.
+    """
+    if intensity <= 0 or not band_envelope:
+        return clip
+
+    low  = band_envelope.get("low")
+    mid  = band_envelope.get("mid")
+    high = band_envelope.get("high")
+    if not low or not mid or not high:
+        return clip
+
+    n = len(low)
+    step = duration / n if n else 0.05
+
+    def _energy_at(t):
+        idx = int(t / step) if step > 0 else 0
+        idx = max(0, min(idx, n - 1))
+        return (low[idx] + mid[idx] + high[idx]) / 3.0
+
+    _SKIP_EPS = 0.01  # energia sotto la quale il boost sarebbe impercettibile
+
+    def _sat_fx(get_frame, t):
+        energy = _energy_at(t)
+        if energy < _SKIP_EPS:
+            return get_frame(t)
+        frame = get_frame(t)
+        _t0 = time.perf_counter() if profile_acc is not None else None
+        f = frame.astype(np.float32)
+        gray = (f * _LUMA_WEIGHTS).sum(axis=2, keepdims=True)
+        factor = 1.0 + energy * intensity * 2.0  # 1x (nessun cambio) -> ~3x
+        out = gray + (f - gray) * factor
+        result = np.clip(out, 0, 255).astype(np.uint8)
+        if profile_acc is not None:
+            profile_acc[0] += time.perf_counter() - _t0
+        return result
+
+    return clip.fl(_sat_fx)
+
+
 # --- ANALISI AUDIO ---
 def analyze_audio(audio_file, duration, fast_mode=False):
     orig_name = getattr(audio_file, "name", "") or ""
@@ -1268,6 +1330,8 @@ _REPORT_IT_EN = [
     ("beat rilevati", "beats detected"),
     ("onset rilevati", "onsets detected"),
     ("Colore reattivo al beat", "Beat-reactive Color"),
+    ("Saturazione reattiva al beat", "Beat-reactive Saturation"),
+    ("di cui Boost Saturazione", "of which Saturation Boost"),
     ("PROFILAZIONE RENDER", "RENDER PROFILING"),
     ("totale", "total"),
     ("Analisi Audio", "Audio Analysis"),
@@ -1951,10 +2015,21 @@ def main():
                 "Reattivita' colore al beat", 0, 100, 0, step=5,
                 help="0 = nessun effetto · valori bassi (10-30%) = il video 'sente' "
                      "la musica restando discreto · 100% = tint colore al massimo. "
-                     "Mappa bassi/medi/alti su rosso/verde/blu (overlay additivo)."
+                     "Mappa bassi/medi/alti su rosso/verde/blu (overlay additivo, "
+                     "aggiunge una tinta SOPRA il video)."
+            ) / 100.0
+
+            saturation_react_amount = st.slider(
+                "Saturazione reattiva al beat", 0, 100, 0, step=5,
+                help="0 = nessun effetto · intensifica i colori GIA' presenti nel "
+                     "video (non aggiunge una tinta, diverso dallo slider sopra) in "
+                     "base all'energia complessiva bassi/medi/alti — sui picchi i "
+                     "colori diventano piu' accesi, sui passaggi quieti restano "
+                     "quelli originali."
             ) / 100.0
         else:
             color_react_amount = 0.0
+            saturation_react_amount = 0.0
 
         st.markdown("---")
 
@@ -1999,7 +2074,7 @@ def main():
                     getattr(audio_file, "name", None), getattr(audio_file, "size", None), round(durata, 2), fast_audio_analysis
                 ) if audio_file else None
 
-                if app_mode == "Decompose" and (beat_sync or color_react_amount > 0) and audio_file:
+                if app_mode == "Decompose" and (beat_sync or color_react_amount > 0 or saturation_react_amount > 0) and audio_file:
                     if _audio_cache_key and st.session_state.get("_audio_cache_key") == _audio_cache_key:
                         beat_times, rms_envelope, decompose_band_envelope = st.session_state["_audio_cache"]
                     else:
@@ -2008,7 +2083,7 @@ def main():
                         st.session_state["_audio_cache_key"] = _audio_cache_key
                         st.session_state["_audio_cache"] = (beat_times, rms_envelope, decompose_band_envelope)
                     beat_count = len(beat_times)
-                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat or color_react_amount > 0) and audio_file:
+                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat or color_react_amount > 0 or saturation_react_amount > 0) and audio_file:
                     if _audio_cache_key and st.session_state.get("_vj_audio_cache_key") == _audio_cache_key:
                         beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times = st.session_state["_vj_audio_cache"]
                     else:
@@ -2121,10 +2196,14 @@ def main():
                 # write_videofile, non ora: il clip e' lazy, il tint viene
                 # eseguito frame per frame solo quando si scrive il file)
                 _color_tint_acc = [0.0]
+                _sat_tint_acc = [0.0]
                 _color_band_env = decompose_band_envelope if app_mode == "Decompose" else vj_band_envelope
                 if color_react_amount > 0 and _color_band_env:
                     final = apply_beat_color_react(final, _color_band_env, run_durata, color_react_amount, profile_acc=_color_tint_acc)
                     extra_log += f"\n* Colore reattivo al beat: {int(color_react_amount*100)}%"
+                if saturation_react_amount > 0 and _color_band_env:
+                    final = apply_beat_saturation_react(final, _color_band_env, run_durata, saturation_react_amount, profile_acc=_sat_tint_acc)
+                    extra_log += f"\n* Saturazione reattiva al beat: {int(saturation_react_amount*100)}%"
 
                 _t_stage = time.perf_counter()
 
@@ -2178,9 +2257,11 @@ def main():
                 # (misurato PRIMA della sleep() di sicurezza qui sotto, che
                 # e' un'attesa fissa per il flush su disco e non lavoro vero)
                 _t_encode_final = time.perf_counter() - _t_stage
-                _prof["Encoding Finale (decode+encode)"] = _t_encode_final - _color_tint_acc[0]
+                _prof["Encoding Finale (decode+encode)"] = _t_encode_final - _color_tint_acc[0] - _sat_tint_acc[0]
                 if _color_tint_acc[0] > 0:
                     _prof["  di cui Tint Colore"] = _color_tint_acc[0]
+                if _sat_tint_acc[0] > 0:
+                    _prof["  di cui Boost Saturazione"] = _sat_tint_acc[0]
                 time.sleep(1.5)
                 _t_stage = time.perf_counter()
 

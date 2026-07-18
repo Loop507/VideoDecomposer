@@ -474,7 +474,8 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       beat_subdivision_choices=None,
                       manual_duration_mode="fixed", manual_duration_choices=None,
                       export_size=None, react_to_peaks=True,
-                      cut_source="beat", onset_times=None):
+                      cut_source="beat", onset_times=None,
+                      subdivision_coarsen=1.0):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
@@ -482,6 +483,12 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     - stutter_prob    : probabilita' [0-1] che uno slice sia stutterato
     - pitch_glitch    : se True, alcuni slice vengono speed-warpati
     - beat_slice_mode : se True, usa i beat (o gli onset, vedi cut_source) come punti di taglio invece di slice_dur fisso
+    - subdivision_coarsen : moltiplicatore >=1.0 applicato a QUALSIASI misura di
+      subdivisione calcolata (fixed/tempo_adaptive/random_*), per allargare i
+      tagli senza cambiare la logica che li sceglie. Usato in automatico
+      quando la stima frammenti supera la soglia di sicurezza RAM: invece di
+      lasciare che l'utente scopra il crash, si allarga la grana da soli.
+      1.0 = nessun cambiamento (default, comportamento identico a prima).
     - beat_times      : lista di timestamp beat (da analyze_audio)
     - cut_source      : "beat" (default, griglia ritmica periodica da beat_track)
                         oppure "onset" (ogni transiente/colpo rilevato da onset_detect,
@@ -718,6 +725,9 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                 sv = local_bpm_to_subdivision_factor(_local_bpm)
             else:  # random_subset
                 sv = random.choice(choices_pool)
+
+            if subdivision_coarsen > 1.0:
+                sv = sv * subdivision_coarsen
 
             # Override reattivo (solo se react_to_peaks=True): prima di
             # applicare la misura scelta (o quella del preset), guardiamo se
@@ -1334,6 +1344,7 @@ _REPORT_IT_EN = [
     ("beat rilevati", "beats detected"),
     ("onset rilevati", "onsets detected"),
     ("Colore reattivo al beat", "Beat-reactive Color"),
+    ("subdivisione allargata", "subdivision widened"),
     ("(manuale)", "(manual)"),
     ("(rilevato)", "(detected)"),
     ("Saturazione reattiva al beat", "Beat-reactive Saturation"),
@@ -1455,11 +1466,11 @@ def main():
             fast_audio_analysis = False
         st.divider()
         st.subheader("Modalita'")
-        app_mode = st.radio("", ["Decompose", "VJ Mode"], horizontal=True)
+        app_mode = st.radio("Modalita'", ["Decompose", "VJ Mode"], horizontal=True, label_visibility="collapsed")
         mix_mode = None
         if app_mode == "Decompose":
             st.subheader("Mix")
-            mix_mode = st.radio("", ["Random", "Quote Fisse"], horizontal=True)
+            mix_mode = st.radio("Mix", ["Random", "Quote Fisse"], horizontal=True, label_visibility="collapsed")
             st.caption("**Random** = probabilita' per frammento  |  **Quote Fisse** = secondi garantiti per sorgente")
 
     c1, c2, c3 = st.columns(3)
@@ -1670,6 +1681,7 @@ def main():
                 beat_subdivision_choices = None
                 slice_density = 1.0
                 react_to_peaks = True
+                _auto_coarsen = 1.0
             else:
                 manual_duration_mode = "fixed"
                 manual_duration_choices = None
@@ -1822,36 +1834,70 @@ def main():
                     if slice_density_pct < 100:
                         st.caption(f"_Solo il {slice_density_pct}% dei beat genera un taglio — il resto continua sulla stessa sorgente._")
 
-                    # --- Stima frammenti previsti (avviso per brani lunghi) ---
-                    # fragments_per_beat = 1/sv sia per sv<1 (uno slice diventa
-                    # 1/sv frammenti) sia per sv>=1 (sv beat vengono accorpati
-                    # in 1 frammento, quindi 1/sv frammenti per beat): formula
-                    # unica, media sui fattori in gioco per la modalita' scelta.
-                    _bpm_est = st.session_state.get("detected_bpm") or 120.0
-                    _dur_est = st.session_state.get("durata_input", 15)
-                    _beats_est = max(1.0, (_dur_est * _bpm_est) / 60.0)
-                    if beat_subdivision_mode == "fixed":
-                        _factors_est = [beat_subdivision_factor]
-                    elif beat_subdivision_mode == "tempo_adaptive":
-                        _factors_est = [local_bpm_to_subdivision_factor(_bpm_est)]
-                    elif beat_subdivision_mode == "random_total":
-                        _factors_est = list(MEASURE_FACTORS.values())
-                    else:
-                        _factors_est = beat_subdivision_choices or [1.0]
-                    _mean_fpb = sum(1.0 / f for f in _factors_est) / len(_factors_est)
-                    _est_fragments = int(_beats_est * slice_density * _mean_fpb)
-                    if _est_fragments > 1200:
-                        st.warning(
-                            f"⚠️ Con questi parametri sono previsti circa **{_est_fragments} "
-                            f"frammenti** per {_dur_est}s di durata finale. Su brani lunghi "
-                            f"(3-4 min), tante sorgenti caricate insieme o subdivisioni molto "
-                            f"fitte, tanti frammenti rallentano parecchio il rendering e possono "
-                            f"causare un riavvio dell'app per esaurimento memoria. Se noti l'app "
-                            f"lenta o che si riavvia, prova una misura piu' larga (es. 1/4 invece "
-                            f"di 1/16) o abbassa la densita' slice."
-                        )
-                    elif _est_fragments > 500:
-                        st.caption(f"_Frammenti previsti: ~{_est_fragments}._")
+            # --- Stima frammenti previsti (avviso per brani lunghi) ---
+            # fragments_per_beat = 1/sv sia per sv<1 (uno slice diventa
+            # 1/sv frammenti) sia per sv>=1 (sv beat vengono accorpati
+            # in 1 frammento, quindi 1/sv frammenti per beat): formula
+            # unica, media sui fattori in gioco per la modalita' scelta.
+            # PRIMA questa stima girava solo nel ramo manuale (auto_vj=False):
+            # in automatico non compariva MAI nessun avviso, proprio nel caso
+            # che piu' ha bisogno di autoregolarsi da solo (l'utente si aspetta
+            # che "Automatico" non lo faccia crashare). Spostata qui fuori dal
+            # ramo if/else cosi' vale in entrambi i casi.
+            _bpm_est = st.session_state.get("detected_bpm") or 120.0
+            _dur_est = st.session_state.get("durata_input", 15)
+            _beats_est = max(1.0, (_dur_est * _bpm_est) / 60.0)
+            if beat_subdivision_mode == "fixed":
+                _factors_est = [beat_subdivision_factor]
+            elif beat_subdivision_mode == "tempo_adaptive":
+                _factors_est = [local_bpm_to_subdivision_factor(_bpm_est)]
+            elif beat_subdivision_mode == "random_total":
+                _factors_est = list(MEASURE_FACTORS.values())
+            else:
+                _factors_est = beat_subdivision_choices or [1.0]
+            _mean_fpb = sum(1.0 / f for f in _factors_est) / len(_factors_est)
+            _est_fragments = int(_beats_est * slice_density * _mean_fpb)
+
+            # --- Auto-coarsening (solo in automatico) ---
+            # "Automatico" promette di non dover tarare nulla a mano — ma la
+            # stima sopra da sola era solo un avviso passivo, e in auto_vj
+            # non veniva nemmeno mostrata (vedi commento sopra). Qui invece
+            # allarghiamo DAVVERO la subdivisione quando la stima e' a
+            # rischio, raddoppiando fino a un tetto (8x) finche' la stima
+            # scende sotto una soglia di sicurezza. Solo per auto_vj: in
+            # manuale l'utente ha scelto la misura apposta, non la tocchiamo
+            # in silenzio (stesso principio gia' applicato a beat_times/
+            # rms_envelope — non riattivare/alterare comportamenti che
+            # l'utente non ha esplicitamente chiesto).
+            _auto_coarsen = 1.0
+            _SAFE_TARGET = 800
+            if auto_vj and _est_fragments > _SAFE_TARGET:
+                while _auto_coarsen < 8.0 and (_est_fragments / _auto_coarsen) > _SAFE_TARGET:
+                    _auto_coarsen *= 2.0
+                _est_fragments_adj = int(_est_fragments / _auto_coarsen)
+                st.info(
+                    f"ℹ️ Automatico: subdivisione allargata x{_auto_coarsen:.0f} in automatico "
+                    f"per restare sotto la soglia di sicurezza RAM — frammenti stimati "
+                    f"~{_est_fragments} → ~{_est_fragments_adj}. Il taglio continua a seguire "
+                    f"il tempo del brano, solo con una grana piu' larga."
+                )
+                _est_fragments = _est_fragments_adj
+
+            if _est_fragments > 1200:
+                st.warning(
+                    f"⚠️ Con questi parametri sono previsti circa **{_est_fragments} "
+                    f"frammenti** per {_dur_est}s di durata finale. Su brani lunghi "
+                    f"(3-4 min), tante sorgenti caricate insieme o subdivisioni molto "
+                    f"fitte, tanti frammenti rallentano parecchio il rendering e possono "
+                    f"causare un riavvio dell'app per esaurimento memoria. Se noti l'app "
+                    f"lenta o che si riavvia, prova una misura piu' larga (es. 1/4 invece "
+                    f"di 1/16) o abbassa la densita' slice."
+                    + (" In automatico, prova un genere piu' lento (es. Ambient invece "
+                       "di Techno) — usa una subdivisione piu' larga a parita' di BPM."
+                       if auto_vj else "")
+                )
+            elif _est_fragments > 500:
+                st.caption(f"_Frammenti previsti: ~{_est_fragments}._")
 
             st.markdown("---")
             loop_reps = st.slider(
@@ -2183,7 +2229,8 @@ def main():
                         export_size=export_size_run,
                         react_to_peaks=react_to_peaks,
                         cut_source=cut_source,
-                        onset_times=vj_onset_times
+                        onset_times=vj_onset_times,
+                        subdivision_coarsen=_auto_coarsen
                     )
                     mode_label = "VJ Mode"
                     if beat_slice_mode and beat_times:
@@ -2204,7 +2251,9 @@ def main():
                                  f"* Alternanza Sorgenti: {src_alt_log}"
                                  f"{' (no ripetizioni consecutive)' if no_repeat else ''}\n"
                                  f"* Auto VJ: {auto_vj}" +
-                                 (f" (preset {vj_genre})" if auto_vj and vj_genre else "") + "\n"
+                                 (f" (preset {vj_genre})" if auto_vj and vj_genre else "") +
+                                 (f" — subdivisione allargata x{_auto_coarsen:.0f} (RAM safety)"
+                                  if _auto_coarsen > 1.0 else "") + "\n"
                                  f"* Crossfade: {int(crossfade_dur*1000)}ms\n"
                                  f"* Freeze on beat: {freeze_on_beat}" +
                                  (f" ({int(freeze_prob*100)}% / {int(freeze_dur*1000)}ms)"

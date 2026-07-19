@@ -1682,6 +1682,8 @@ def main():
                 slice_density = 1.0
                 react_to_peaks = True
                 _auto_coarsen = 1.0
+                _auto_loop_reps_cap = None
+                _loop_reps_est = None
             else:
                 manual_duration_mode = "fixed"
                 manual_duration_choices = None
@@ -1877,31 +1879,55 @@ def main():
             ) / 100.0
             _stutter_multiplier = 1.0 + _stutter_prob_est * max(0, _loop_reps_est - 1)
 
-            _est_fragments = int(_beats_est * slice_density * _mean_fpb * _stutter_multiplier)
+            _base_est = int(_beats_est * slice_density * _mean_fpb)  # SOLO i tagli: la grana che l'utente vuole tenere il piu' fine possibile
+            _est_fragments = int(_base_est * _stutter_multiplier)   # oggetti reali, stutter incluso
 
-            # --- Auto-coarsening (solo in automatico) ---
-            # "Automatico" promette di non dover tarare nulla a mano — ma la
-            # stima sopra da sola era solo un avviso passivo, e in auto_vj
-            # non veniva nemmeno mostrata (vedi commento sopra). Qui invece
-            # allarghiamo DAVVERO la subdivisione quando la stima e' a
-            # rischio, raddoppiando fino a un tetto (8x) finche' la stima
-            # scende sotto una soglia di sicurezza. Solo per auto_vj: in
-            # manuale l'utente ha scelto la misura apposta, non la tocchiamo
-            # in silenzio (stesso principio gia' applicato a beat_times/
-            # rms_envelope — non riattivare/alterare comportamenti che
-            # l'utente non ha esplicitamente chiesto).
+            # --- Auto-adattamento (solo in automatico), con priorita' precisa ---
+            # "Automatico" deve restare il piu' fine e reattivo possibile sul
+            # taglio (piccolo, a tempo di BPM) — quindi se c'e' margine per
+            # stare sotto la soglia RAM riducendo SOLO lo stutter (loop_reps),
+            # i tagli non si toccano affatto: lo stutter ripete un frammento
+            # gia' piccolo, non lo rende piu' fine, quindi e' il primo posto
+            # dove tagliare. Si allarga la subdivisione (tagli piu' grandi)
+            # SOLO come ultima risorsa, quando anche a stutter azzerato i
+            # tagli da soli sfondano gia' la soglia da soli.
             _auto_coarsen = 1.0
+            _auto_loop_reps_cap = None
             _SAFE_TARGET = 800
             if auto_vj and _est_fragments > _SAFE_TARGET:
-                while _auto_coarsen < 8.0 and (_est_fragments / _auto_coarsen) > _SAFE_TARGET:
-                    _auto_coarsen *= 2.0
-                _est_fragments_adj = int(_est_fragments / _auto_coarsen)
-                st.info(
-                    f"ℹ️ Automatico: subdivisione allargata x{_auto_coarsen:.0f} in automatico "
-                    f"per restare sotto la soglia di sicurezza RAM — frammenti stimati "
-                    f"~{_est_fragments} → ~{_est_fragments_adj}. Il taglio continua a seguire "
-                    f"il tempo del brano, solo con una grana piu' larga."
-                )
+                if _base_est <= _SAFE_TARGET:
+                    # i tagli da soli starebbero dentro la soglia: il problema
+                    # e' SOLO lo stutter -> lo riduciamo, i tagli restano
+                    # esattamente quelli scelti dal BPM, invariati
+                    _lr = _loop_reps_est
+                    while _lr > 1 and int(_base_est * (1.0 + _stutter_prob_est * (_lr - 1))) > _SAFE_TARGET:
+                        _lr -= 1
+                    _auto_loop_reps_cap = _lr
+                    _est_fragments_adj = int(_base_est * (1.0 + _stutter_prob_est * (_lr - 1)))
+                    st.info(
+                        f"ℹ️ Automatico: loop stutter ridotto da x{_loop_reps_est} a x{_lr} "
+                        f"per restare sotto la soglia di sicurezza RAM — i TAGLI restano "
+                        f"invariati (stessa grana, stesso BPM), si ripete di meno. "
+                        f"Oggetti stimati ~{_est_fragments} → ~{_est_fragments_adj}."
+                    )
+                else:
+                    # anche a stutter zero i tagli da soli sfondano: qui non
+                    # c'e' alternativa, va allargata la subdivisione
+                    while _auto_coarsen < 8.0 and (_base_est / _auto_coarsen) > _SAFE_TARGET:
+                        _auto_coarsen *= 2.0
+                    _base_est_adj = int(_base_est / _auto_coarsen)
+                    _lr = _loop_reps_est
+                    while _lr > 1 and int(_base_est_adj * (1.0 + _stutter_prob_est * (_lr - 1))) > _SAFE_TARGET:
+                        _lr -= 1
+                    _auto_loop_reps_cap = _lr
+                    _est_fragments_adj = int(_base_est_adj * (1.0 + _stutter_prob_est * (_lr - 1)))
+                    st.info(
+                        f"ℹ️ Automatico: anche azzerando lo stutter i tagli da soli erano "
+                        f"troppi ({_base_est} per {_dur_est}s) — subdivisione allargata "
+                        f"x{_auto_coarsen:.0f}" +
+                        (f" e loop stutter ridotto a x{_lr}" if _lr < _loop_reps_est else "") +
+                        f". Oggetti stimati ~{_est_fragments} → ~{_est_fragments_adj}."
+                    )
                 _est_fragments = _est_fragments_adj
 
             if _est_fragments > 1200:
@@ -1927,6 +1953,13 @@ def main():
                 key=f"loop_reps_{vj_genre}",
                 help="Quante volte uno slice viene ripetuto. 1 = nessun loop."
             )
+            if auto_vj and _auto_loop_reps_cap is not None and _auto_loop_reps_cap < loop_reps:
+                # Il valore mostrato nello slider resta quello del preset (lo
+                # slider e' un widget con la sua key, non lo tocchiamo) ma il
+                # valore EFFETTIVAMENTE usato dal motore e' quello ridotto
+                # dall'auto-adattamento sopra — gia' spiegato all'utente col
+                # st.info() poco fa.
+                loop_reps = _auto_loop_reps_cap
             stutter_prob = st.slider(
                 "Probabilita' stutter %", min_value=0, max_value=100,
                 value=int(preset["stutter_prob"] * 100) if auto_vj else 40,
@@ -2266,7 +2299,9 @@ def main():
                         f"V{k+1}:{source_weights.get(k,0)}%" for k in source_weights)
                         if source_mode == "pesata" else "Casuale")
                     extra_log = (f"* Slice Mode: {slice_info}\n"
-                                 f"* Loop Reps: {loop_reps}\n"
+                                 f"* Loop Reps: {loop_reps}" +
+                                 (f" (ridotto da x{_loop_reps_est} per RAM safety)"
+                                  if auto_vj and _auto_loop_reps_cap is not None and _auto_loop_reps_cap < _loop_reps_est else "") + "\n"
                                  f"* Stutter Prob: {int(stutter_prob*100)}%\n"
                                  f"* Pitch Glitch: {pitch_glitch}\n"
                                  f"* Alternanza Sorgenti: {src_alt_log}"

@@ -1683,7 +1683,9 @@ def main():
                 react_to_peaks = True
                 _auto_coarsen = 1.0
                 _auto_loop_reps_cap = None
+                _auto_freeze_cap = None
                 _loop_reps_est = None
+                _freeze_prob_est = None
             else:
                 manual_duration_mode = "fixed"
                 manual_duration_choices = None
@@ -1859,16 +1861,21 @@ def main():
                 _factors_est = beat_subdivision_choices or [1.0]
             _mean_fpb = sum(1.0 / f for f in _factors_est) / len(_factors_est)
 
-            # Lo stutter (loop_reps/stutter_prob) NON e' ancora stato letto
-            # dai widget qui (vengono dopo nel codice), ma i loro valori
-            # sono gia' in session_state da un run precedente (o dal
-            # preset, al primissimo run) — leggibili comunque per stimare.
-            # Serve perche' uno slice stutterato non e' UN oggetto, ne sono
-            # 'loop_reps': meta' dei frammenti puo' facilmente diventare 3
-            # clip concatenate ciascuno (preset Techno: stutter 50%, loop
-            # x3) — senza questo fattore la stima sottovaluta pesantemente
-            # gli oggetti reali che moviepy deve tenere in memoria, ed e'
-            # esattamente quello che ha reso insufficiente il coarsening.
+            # Lo stutter (loop_reps/stutter_prob) e il freeze (freeze_on_beat/
+            # freeze_prob) NON sono ancora stati letti dai widget qui
+            # (vengono dopo nel codice), ma i loro valori sono gia' in
+            # session_state da un run precedente (o dal preset, al primo
+            # run) — leggibili comunque per stimare.
+            # Servono perche' uno slice stutterato non e' UN oggetto, ne
+            # sono 'loop_reps' (Techno: stutter 50%, loop x3 -> quasi il
+            # doppio degli oggetti reali rispetto al numero di tagli), e
+            # ogni freeze aggiunge un ImageClip in piu' nella sequenza
+            # (Techno: freeze_prob 35%, ON di default in automatico).
+            # Senza questi due fattori la stima sottovaluta pesantemente
+            # gli oggetti reali che moviepy deve tenere in memoria — ed e'
+            # esattamente quello che ha reso insufficiente il primo
+            # tentativo di auto-coarsening (contava solo lo stutter, non
+            # il freeze).
             _loop_reps_est = st.session_state.get(
                 f"loop_reps_{vj_genre}",
                 preset["loop_reps"] if (auto_vj and preset) else 2
@@ -1877,57 +1884,71 @@ def main():
                 f"stutter_prob_{vj_genre}",
                 int(preset["stutter_prob"] * 100) if (auto_vj and preset) else 40
             ) / 100.0
-            _stutter_multiplier = 1.0 + _stutter_prob_est * max(0, _loop_reps_est - 1)
+            _freeze_on_est = st.session_state.get(f"freeze_on_beat_{vj_genre}", auto_vj)
+            _freeze_prob_est = st.session_state.get(
+                f"freeze_prob_{vj_genre}",
+                int(preset["freeze_prob"] * 100) if (auto_vj and preset) else 20
+            ) / 100.0 if _freeze_on_est else 0.0
+
+            def _calc_est(base, lr, sp, fp):
+                # +1 oggetto extra ogni 'lr-1' ripetizioni stutterate, +1
+                # oggetto (piu' leggero, ImageClip) ogni freeze: additivi,
+                # non moltiplicati tra loro (sono eventi indipendenti per
+                # slice, non concatenati l'uno dentro l'altro).
+                mult = 1.0 + sp * max(0, lr - 1) + fp
+                return int(base * mult)
 
             _base_est = int(_beats_est * slice_density * _mean_fpb)  # SOLO i tagli: la grana che l'utente vuole tenere il piu' fine possibile
-            _est_fragments = int(_base_est * _stutter_multiplier)   # oggetti reali, stutter incluso
+            _est_fragments = _calc_est(_base_est, _loop_reps_est, _stutter_prob_est, _freeze_prob_est)
 
-            # --- Auto-adattamento (solo in automatico), con priorita' precisa ---
+            # --- Auto-adattamento (solo in automatico), priorita' a 3 livelli ---
             # "Automatico" deve restare il piu' fine e reattivo possibile sul
-            # taglio (piccolo, a tempo di BPM) — quindi se c'e' margine per
-            # stare sotto la soglia RAM riducendo SOLO lo stutter (loop_reps),
-            # i tagli non si toccano affatto: lo stutter ripete un frammento
-            # gia' piccolo, non lo rende piu' fine, quindi e' il primo posto
-            # dove tagliare. Si allarga la subdivisione (tagli piu' grandi)
-            # SOLO come ultima risorsa, quando anche a stutter azzerato i
-            # tagli da soli sfondano gia' la soglia da soli.
+            # taglio (piccolo, a tempo di BPM) — quindi si riduce PRIMA tutto
+            # cio' che non tocca la grana del taglio (stutter, poi freeze), e
+            # SOLO se anche cosi' non basta si allarga la subdivisione
+            # (ultima risorsa, tagli piu' grandi). Soglia abbassata rispetto
+            # al primo tentativo (era 800, ora 500): la stima precedente
+            # aveva gia' sottostimato una volta (freeze non contato), meglio
+            # tenere piu' margine reale che tarare al millimetro su un numero
+            # di cui non abbiamo certezza assoluta.
             _auto_coarsen = 1.0
             _auto_loop_reps_cap = None
-            _SAFE_TARGET = 800
+            _auto_freeze_cap = None
+            _SAFE_TARGET = 500
             if auto_vj and _est_fragments > _SAFE_TARGET:
-                if _base_est <= _SAFE_TARGET:
-                    # i tagli da soli starebbero dentro la soglia: il problema
-                    # e' SOLO lo stutter -> lo riduciamo, i tagli restano
-                    # esattamente quelli scelti dal BPM, invariati
-                    _lr = _loop_reps_est
-                    while _lr > 1 and int(_base_est * (1.0 + _stutter_prob_est * (_lr - 1))) > _SAFE_TARGET:
-                        _lr -= 1
-                    _auto_loop_reps_cap = _lr
-                    _est_fragments_adj = int(_base_est * (1.0 + _stutter_prob_est * (_lr - 1)))
-                    st.info(
-                        f"ℹ️ Automatico: loop stutter ridotto da x{_loop_reps_est} a x{_lr} "
-                        f"per restare sotto la soglia di sicurezza RAM — i TAGLI restano "
-                        f"invariati (stessa grana, stesso BPM), si ripete di meno. "
-                        f"Oggetti stimati ~{_est_fragments} → ~{_est_fragments_adj}."
-                    )
-                else:
-                    # anche a stutter zero i tagli da soli sfondano: qui non
-                    # c'e' alternativa, va allargata la subdivisione
-                    while _auto_coarsen < 8.0 and (_base_est / _auto_coarsen) > _SAFE_TARGET:
+                _lr, _fp = _loop_reps_est, _freeze_prob_est
+                _base_work = _base_est
+
+                if _base_work > _SAFE_TARGET:
+                    # anche a stutter/freeze zero i tagli da soli sfondano:
+                    # qui non c'e' alternativa, va allargata la subdivisione
+                    while _auto_coarsen < 8.0 and (_base_work / _auto_coarsen) > _SAFE_TARGET:
                         _auto_coarsen *= 2.0
-                    _base_est_adj = int(_base_est / _auto_coarsen)
-                    _lr = _loop_reps_est
-                    while _lr > 1 and int(_base_est_adj * (1.0 + _stutter_prob_est * (_lr - 1))) > _SAFE_TARGET:
-                        _lr -= 1
-                    _auto_loop_reps_cap = _lr
-                    _est_fragments_adj = int(_base_est_adj * (1.0 + _stutter_prob_est * (_lr - 1)))
-                    st.info(
-                        f"ℹ️ Automatico: anche azzerando lo stutter i tagli da soli erano "
-                        f"troppi ({_base_est} per {_dur_est}s) — subdivisione allargata "
-                        f"x{_auto_coarsen:.0f}" +
-                        (f" e loop stutter ridotto a x{_lr}" if _lr < _loop_reps_est else "") +
-                        f". Oggetti stimati ~{_est_fragments} → ~{_est_fragments_adj}."
-                    )
+                    _base_work = int(_base_work / _auto_coarsen)
+
+                # Livello 1: riduci lo stutter (i tagli restano quelli scelti dal BPM)
+                while _lr > 1 and _calc_est(_base_work, _lr, _stutter_prob_est, _fp) > _SAFE_TARGET:
+                    _lr -= 1
+                # Livello 2: se non basta, riduci anche il freeze
+                while _fp > 0.0 and _calc_est(_base_work, _lr, _stutter_prob_est, _fp) > _SAFE_TARGET:
+                    _fp = max(0.0, _fp - 0.1)
+
+                _auto_loop_reps_cap = _lr
+                _auto_freeze_cap = _fp
+                _est_fragments_adj = _calc_est(_base_work, _lr, _stutter_prob_est, _fp)
+
+                _parts = []
+                if _auto_coarsen > 1.0:
+                    _parts.append(f"subdivisione allargata x{_auto_coarsen:.0f}")
+                if _lr < _loop_reps_est:
+                    _parts.append(f"loop stutter ridotto da x{_loop_reps_est} a x{_lr}")
+                if _fp < _freeze_prob_est:
+                    _parts.append(f"probabilita' freeze ridotta da {int(_freeze_prob_est*100)}% a {int(_fp*100)}%")
+                st.info(
+                    f"ℹ️ Automatico: " + ", ".join(_parts) +
+                    f" per restare sotto la soglia di sicurezza RAM. "
+                    f"Oggetti stimati ~{_est_fragments} → ~{_est_fragments_adj}."
+                )
                 _est_fragments = _est_fragments_adj
 
             if _est_fragments > 1200:
@@ -2004,6 +2025,12 @@ def main():
                     help="Percentuale dei beat reali rilevati nell'audio su cui scatta "
                          "il freeze-frame (ancorato al beat, non casuale)."
                 ) / 100.0
+                if auto_vj and _auto_freeze_cap is not None and _auto_freeze_cap < freeze_prob:
+                    # Stessa logica del cap su loop_reps: lo slider resta
+                    # com'e' visivamente, il valore usato dal motore e'
+                    # quello ridotto dall'auto-adattamento (gia' spiegato
+                    # nel st.info() sopra).
+                    freeze_prob = _auto_freeze_cap
                 freeze_ms = st.slider(
                     "Durata freeze (ms)", min_value=50, max_value=500,
                     value=preset["freeze_ms"] if auto_vj else 150, step=10,
@@ -2313,7 +2340,10 @@ def main():
                                  f"* Crossfade: {int(crossfade_dur*1000)}ms\n"
                                  f"* Freeze on beat: {freeze_on_beat}" +
                                  (f" ({int(freeze_prob*100)}% / {int(freeze_dur*1000)}ms)"
-                                  if freeze_on_beat else "") + "\n"
+                                  if freeze_on_beat else "") +
+                                 (f" (ridotto da {int(_freeze_prob_est*100)}% per RAM safety)"
+                                  if auto_vj and freeze_on_beat and _auto_freeze_cap is not None
+                                     and _freeze_prob_est is not None and _auto_freeze_cap < _freeze_prob_est else "") + "\n"
                                  f"* Audio Mix: {AUDIO_MIX_LABELS.get(audio_mix_mode, audio_mix_mode)}" +
                                  (f" (musica {int(vol_music*100)}% / originale {int(vol_original*100)}%)"
                                   if audio_mix_mode in ("mix", "mix_decomposed") else "") + "\n"

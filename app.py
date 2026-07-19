@@ -1856,7 +1856,28 @@ def main():
             else:
                 _factors_est = beat_subdivision_choices or [1.0]
             _mean_fpb = sum(1.0 / f for f in _factors_est) / len(_factors_est)
-            _est_fragments = int(_beats_est * slice_density * _mean_fpb)
+
+            # Lo stutter (loop_reps/stutter_prob) NON e' ancora stato letto
+            # dai widget qui (vengono dopo nel codice), ma i loro valori
+            # sono gia' in session_state da un run precedente (o dal
+            # preset, al primissimo run) — leggibili comunque per stimare.
+            # Serve perche' uno slice stutterato non e' UN oggetto, ne sono
+            # 'loop_reps': meta' dei frammenti puo' facilmente diventare 3
+            # clip concatenate ciascuno (preset Techno: stutter 50%, loop
+            # x3) — senza questo fattore la stima sottovaluta pesantemente
+            # gli oggetti reali che moviepy deve tenere in memoria, ed e'
+            # esattamente quello che ha reso insufficiente il coarsening.
+            _loop_reps_est = st.session_state.get(
+                f"loop_reps_{vj_genre}",
+                preset["loop_reps"] if (auto_vj and preset) else 2
+            )
+            _stutter_prob_est = st.session_state.get(
+                f"stutter_prob_{vj_genre}",
+                int(preset["stutter_prob"] * 100) if (auto_vj and preset) else 40
+            ) / 100.0
+            _stutter_multiplier = 1.0 + _stutter_prob_est * max(0, _loop_reps_est - 1)
+
+            _est_fragments = int(_beats_est * slice_density * _mean_fpb * _stutter_multiplier)
 
             # --- Auto-coarsening (solo in automatico) ---
             # "Automatico" promette di non dover tarare nulla a mano — ma la
@@ -2389,6 +2410,23 @@ def main():
                     _bpm_is_manual = st.session_state.get("manual_bpm_input", 0.0) > 0
                     _bpm_line = f"* BPM: {detected_bpm:.1f}" + (" (manuale)" if _bpm_is_manual else " (rilevato)")
 
+                _log_lines = [
+                    f"* Sorgenti Video: {engine.stats['sources']}",
+                    f"* Frammenti Generati: {total_frags}",
+                    f"* Modalita': {mix_log}",
+                ]
+                if _bpm_line:
+                    _log_lines.append(_bpm_line)
+                if extra_log:
+                    _log_lines.append(extra_log)
+                if beat_sync and audio_file:
+                    _log_lines.append(f"* Beat Sync: ON — {beat_count} beat rilevati")
+                if app_mode == "VJ Mode" and beat_slice_mode and beat_times:
+                    _n_slice = len(vj_onset_times) if cut_source == "onset" and vj_onset_times else beat_count
+                    _slice_label = "onset rilevati" if cut_source == "onset" else "beat rilevati"
+                    _log_lines.append(f"* Slice Automatico: ON — {_n_slice} {_slice_label}")
+                _log_block = "\n".join(_log_lines)
+
                 report_it = f"""[DECOMP_ARCHIVE] // VOL_01 // H.264 // AAC
 :: FILE: {render_name}
 :: STILE: Minimalismo Computazionale / Glitch Brutalista
@@ -2397,13 +2435,7 @@ def main():
 :: PROCESSO: {mode_label}
 
 :: TECHNICAL LOG SHEET:
-* Sorgenti Video: {engine.stats['sources']}
-* Frammenti Generati: {total_frags}
-* Modalita': {mix_log}
-{_bpm_line}
-{extra_log}
-{'* Beat Sync: ON — ' + str(beat_count) + ' beat rilevati' if beat_sync and audio_file else ''}
-{'* Slice Automatico: ON — ' + str(len(vj_onset_times) if cut_source == 'onset' and vj_onset_times else beat_count) + (' onset rilevati' if cut_source == 'onset' else ' beat rilevati') if app_mode == 'VJ Mode' and beat_slice_mode and beat_times else ''}
+{_log_block}
 
 {profiling_log}
 

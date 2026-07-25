@@ -10,6 +10,94 @@ from moviepy.editor import VideoFileClip, concatenate_videoclips, ImageClip, Com
 from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 from PIL import Image
 import librosa
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+# ---------------------------------------------------------------------------
+# MODULATION LAB (opzionale, additivo) — incollato qui per tenere l'app in un
+# unico file (nessuna dipendenza esterna da caricare separatamente su
+# Streamlit Cloud). Stesso codice di modulation_matrix.py, versione minima
+# (solo le due classi usate: EnvelopeADSR e ModulationMatrix).
+# ---------------------------------------------------------------------------
+MODULATION_LAB_AVAILABLE = True
+
+
+class EnvelopeADSR:
+    """Inviluppo ADSR offline, triggerato da una lista di timestamp (qui:
+    onset_times gia' rilevati da librosa) invece che da note MIDI. Ogni
+    trigger avvia un ciclo ADSR indipendente; gli inviluppi sovrapposti si
+    sommano e vengono clippati a 1.0 (come una voce polifonica che satura)."""
+
+    def __init__(self, trigger_times, attack=0.02, decay=0.08,
+                 sustain=0.6, release=0.25):
+        self.trigger_times = np.asarray(trigger_times)
+        self.attack = attack
+        self.decay = decay
+        self.sustain = sustain
+        self.release = release
+
+    def _single_env(self, dt):
+        env = np.zeros_like(dt)
+        a, d, r, s = self.attack, self.decay, self.release, self.sustain
+
+        mask_a = (dt >= 0) & (dt < a)
+        env[mask_a] = dt[mask_a] / max(a, 1e-6)
+
+        mask_d = (dt >= a) & (dt < a + d)
+        env[mask_d] = 1 - (1 - s) * (dt[mask_d] - a) / max(d, 1e-6)
+
+        sustain_end = a + d + 0.3
+        mask_s = (dt >= a + d) & (dt < sustain_end)
+        env[mask_s] = s
+
+        mask_r = (dt >= sustain_end) & (dt < sustain_end + r)
+        env[mask_r] = s * (1 - (dt[mask_r] - sustain_end) / max(r, 1e-6))
+
+        return np.clip(env, 0, 1)
+
+    def render(self, n_frames, fps):
+        t = np.arange(n_frames) / fps
+        total = np.zeros(n_frames)
+        for trig in self.trigger_times:
+            total += self._single_env(t - trig)
+        return np.clip(total, 0, 1)
+
+
+@dataclass
+class _ModRoute:
+    source: object
+    amount: float = 1.0
+    mode: str = "add"
+    curve: Optional[Callable] = None
+
+
+@dataclass
+class ModulationMatrix:
+    """Matrice sorgente->parametro->amount, pre-renderizzata (offline, non
+    live): un target (es. 'clip_start_offset') puo' avere N route che si
+    combinano additivamente o moltiplicativamente."""
+
+    base_values: dict = field(default_factory=dict)
+    routes: dict = field(default_factory=dict)
+
+    def add_route(self, target, source, amount=1.0, mode="add", curve=None):
+        self.routes.setdefault(target, []).append(
+            _ModRoute(source=source, amount=amount, mode=mode, curve=curve)
+        )
+
+    def render_target(self, target, n_frames, fps):
+        base = self.base_values.get(target, 0.0)
+        out = np.full(n_frames, base, dtype=float)
+        for route in self.routes.get(target, []):
+            val = route.source.render(n_frames, fps)
+            if route.curve is not None:
+                val = route.curve(val)
+            val = val * route.amount
+            out = out + val if route.mode == "add" else out * (1.0 + val)
+        return out
+# ---------------------------------------------------------------------------
+# FINE MODULATION LAB
+# ---------------------------------------------------------------------------
 
 # --- PATCH COMPATIBILITA' ---
 if hasattr(Image, 'Resampling'):
@@ -384,6 +472,30 @@ def local_bpm_to_subdivision_factor(local_bpm):
     return 4.0        # lento: raggruppa 4 beat, fraseggio ampio
 
 
+def build_start_offset_matrix(onset_times, duration, attack=0.02, decay=0.1,
+                               sustain=0.3, release=0.2, amount=0.15):
+    """MODULATION LAB: costruisce una ModulationMatrix con un solo target,
+    'clip_start_offset', pilotato da un EnvelopeADSR triggerato sugli onset
+    reali del brano gia' rilevati da analyze_audio.
+
+    E' puramente ADDITIVO e opzionale: se onset_times e' vuoto/None o il
+    modulo non e' disponibile, ritorna None e il chiamante deve semplicemente
+    non applicare nessuna perturbazione (comportamento identico a oggi).
+
+    amount : ampiezza massima della perturbazione, in FRAZIONE del segmento
+             (0.15 = lo start puo' spostarsi al massimo del 15% della durata
+             del frammento) — non secondi assoluti, cosi' l'effetto scala
+             coerentemente sia su slice cortissime che su slice lunghe.
+    """
+    if not MODULATION_LAB_AVAILABLE or not onset_times:
+        return None
+    matrix = ModulationMatrix(base_values={"clip_start_offset": 0.0})
+    env = EnvelopeADSR(np.asarray(onset_times), attack=attack, decay=decay,
+                        sustain=sustain, release=release)
+    matrix.add_route("clip_start_offset", env, amount=amount, mode="add")
+    return matrix
+
+
 # --- MOTORE PROCEDURALE (slit scan) ---
 def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, scan_mode,
                                 rms_envelope=None):
@@ -475,7 +587,8 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       manual_duration_mode="fixed", manual_duration_choices=None,
                       export_size=None, react_to_peaks=True,
                       cut_source="beat", onset_times=None,
-                      subdivision_coarsen=1.0):
+                      subdivision_coarsen=1.0,
+                      mod_matrix=None, mod_matrix_fps=None):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
@@ -546,6 +659,18 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     all_clips = []
     total_fragments = 0
     curr_t = 0.0
+
+    # MODULATION LAB: curva di offset precalcolata UNA sola volta per l'intera
+    # durata (non ricalcolata ad ogni frammento). None se non attivata: in tal
+    # caso il ramo sotto (in fase di scelta di start_p) non fa nulla e il
+    # comportamento resta identico a prima dell'introduzione di questo blocco.
+    _mod_offset_curve = None
+    _mod_fps_ref = mod_matrix_fps or fps
+    if mod_matrix is not None:
+        _n_frames_mod = max(1, int(duration * _mod_fps_ref))
+        _mod_offset_curve = mod_matrix.render_target(
+            "clip_start_offset", _n_frames_mod, _mod_fps_ref
+        )
 
     # Bucket anti-ripetizione per VJ Mode (stesso sistema del VideoEngine)
     recent_cuts = {}
@@ -935,6 +1060,19 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             k = pick_source_key()
             source = video_clips[k]
             start_p = pick_start_dj(source, k, seg)
+
+            # MODULATION LAB: piccola perturbazione additiva dello start,
+            # proporzionale a 'seg' (non secondi assoluti fissi) cosi' scala
+            # bene sia su slice cortissime che lunghe. Clampata per restare
+            # dentro i bound validi del sorgente: mai sotto 0, mai oltre
+            # (source.duration - seg). Se _mod_offset_curve e' None (default)
+            # questo blocco e' un no-op e start_p resta esattamente quello
+            # scelto da pick_start_dj come prima.
+            if _mod_offset_curve is not None:
+                _idx = min(int(curr_t * _mod_fps_ref), len(_mod_offset_curve) - 1)
+                start_p = start_p + _mod_offset_curve[_idx] * seg
+                start_p = max(0.0, min(start_p, max(0.0, source.duration - seg)))
+
             base_clip = fit_to_size(source.subclip(start_p, min(start_p + seg, source.duration)), target_size).set_fps(fps).set_duration(seg)
 
             if pitch_glitch and random.random() < 0.15:
@@ -1995,6 +2133,37 @@ def main():
             )
 
             st.markdown("---")
+            mod_lab_on = False
+            mod_matrix_amount = 0.15
+            if MODULATION_LAB_AVAILABLE:
+                mod_lab_on = st.checkbox(
+                    "🧪 Modulation Lab (beta): micro-variazione start su onset",
+                    value=False,
+                    key=f"mod_lab_on_{vj_genre}",
+                    help="Aggiunge una piccola perturbazione ADDITIVA al punto di "
+                         "partenza di ogni frammento, pilotata da un inviluppo ADSR "
+                         "triggerato sugli onset reali del brano (non sostituisce "
+                         "nulla del sistema di taglio esistente: se disattivato, "
+                         "l'output e' identico a prima)."
+                )
+                if mod_lab_on:
+                    mod_matrix_amount = st.slider(
+                        "Ampiezza perturbazione (% del segmento)",
+                        min_value=0, max_value=40, value=15, step=1,
+                        key=f"mod_lab_amount_{vj_genre}",
+                        help="0% = nessun effetto anche a checkbox attivo. "
+                             "Valori alti spostano di piu' il punto di partenza "
+                             "di ogni frammento rispetto a quanto scelto dal "
+                             "sistema anti-ripetizione a bucket."
+                    ) / 100.0
+            else:
+                st.caption(
+                    "_Modulation Lab non disponibile: manca modulation_matrix.py "
+                    "nella stessa cartella dell'app (funzionalita' opzionale, "
+                    "il resto dell'app funziona normalmente)._"
+                )
+
+            st.markdown("---")
             crossfade_on = st.toggle(
                 "Crossfade tra slice", value=auto_vj,
                 key=f"crossfade_on_{vj_genre}",
@@ -2287,6 +2456,16 @@ def main():
                     # densita' di taglio reattiva e burst override.
                     _vj_rms_for_engine = vj_rms_envelope if (beat_slice_mode or freeze_on_beat) else None
                     _vj_band_for_engine = vj_band_envelope if (beat_slice_mode or freeze_on_beat) else None
+                    # MODULATION LAB: costruita solo se il toggle e' attivo E
+                    # ci sono onset disponibili. In ogni altro caso e' None,
+                    # quindi generate_dj_remix si comporta esattamente come
+                    # prima dell'introduzione di questa funzionalita'.
+                    _mod_matrix = None
+                    if mod_lab_on and vj_onset_times:
+                        _mod_matrix = build_start_offset_matrix(
+                            vj_onset_times, run_durata, amount=mod_matrix_amount
+                        )
+
                     final, total_frags, cut_schedule = generate_dj_remix(
                         engine.video_clips, run_durata, fps,
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
@@ -2311,7 +2490,9 @@ def main():
                         react_to_peaks=react_to_peaks,
                         cut_source=cut_source,
                         onset_times=vj_onset_times,
-                        subdivision_coarsen=_auto_coarsen
+                        subdivision_coarsen=_auto_coarsen,
+                        mod_matrix=_mod_matrix,
+                        mod_matrix_fps=fps
                     )
                     mode_label = "VJ Mode"
                     if beat_slice_mode and beat_times:

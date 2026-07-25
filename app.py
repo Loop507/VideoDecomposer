@@ -472,8 +472,8 @@ def local_bpm_to_subdivision_factor(local_bpm):
     return 4.0        # lento: raggruppa 4 beat, fraseggio ampio
 
 
-def build_start_offset_matrix(onset_times, duration, attack=0.02, decay=0.1,
-                               sustain=0.3, release=0.2, amount=0.15):
+def build_start_offset_matrix(onset_times, duration, attack=0.06, decay=0.35,
+                               sustain=0.65, release=0.6, amount=0.35):
     """MODULATION LAB: costruisce una ModulationMatrix con un solo target,
     'clip_start_offset', pilotato da un EnvelopeADSR triggerato sugli onset
     reali del brano gia' rilevati da analyze_audio.
@@ -482,10 +482,18 @@ def build_start_offset_matrix(onset_times, duration, attack=0.02, decay=0.1,
     modulo non e' disponibile, ritorna None e il chiamante deve semplicemente
     non applicare nessuna perturbazione (comportamento identico a oggi).
 
-    amount : ampiezza massima della perturbazione, in FRAZIONE del segmento
-             (0.15 = lo start puo' spostarsi al massimo del 15% della durata
-             del frammento) — non secondi assoluti, cosi' l'effetto scala
-             coerentemente sia su slice cortissime che su slice lunghe.
+    amount : ampiezza massima della perturbazione in SECONDI ASSOLUTI (non piu'
+             frazione del segmento). Con frammenti molto corti (es. 0.1-0.3s,
+             tipico con subdivisione beat fitta) una perturbazione proporzionale
+             al segmento risultava impercettibile; in secondi fissi l'effetto
+             resta visibile indipendentemente da quanto e' corto il frammento
+             (viene comunque clampato dentro i bound del sorgente a valle).
+
+    attack/decay/sustain/release : di default piu' lenti rispetto alla prima
+             versione (era 0.02/0.1/0.3/0.2, "scatto" quasi impercettibile).
+             Con questi valori il "respiro" dura circa 1s dopo ogni onset,
+             quindi e' molto piu' probabile che un frammento lo catturi vicino
+             al picco invece che gia' rientrato a zero.
     """
     if not MODULATION_LAB_AVAILABLE or not onset_times:
         return None
@@ -1061,16 +1069,17 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             source = video_clips[k]
             start_p = pick_start_dj(source, k, seg)
 
-            # MODULATION LAB: piccola perturbazione additiva dello start,
-            # proporzionale a 'seg' (non secondi assoluti fissi) cosi' scala
-            # bene sia su slice cortissime che lunghe. Clampata per restare
-            # dentro i bound validi del sorgente: mai sotto 0, mai oltre
-            # (source.duration - seg). Se _mod_offset_curve e' None (default)
-            # questo blocco e' un no-op e start_p resta esattamente quello
-            # scelto da pick_start_dj come prima.
+            # MODULATION LAB: perturbazione additiva dello start, ora in
+            # SECONDI ASSOLUTI (non piu' proporzionale a 'seg'): su slice
+            # cortissime (subdivisione beat fitta) una perturbazione in
+            # frazione del segmento risultava impercettibile. Clampata per
+            # restare dentro i bound validi del sorgente: mai sotto 0, mai
+            # oltre (source.duration - seg). Se _mod_offset_curve e' None
+            # (default) questo blocco e' un no-op e start_p resta esattamente
+            # quello scelto da pick_start_dj come prima.
             if _mod_offset_curve is not None:
                 _idx = min(int(curr_t * _mod_fps_ref), len(_mod_offset_curve) - 1)
-                start_p = start_p + _mod_offset_curve[_idx] * seg
+                start_p = start_p + _mod_offset_curve[_idx]
                 start_p = max(0.0, min(start_p, max(0.0, source.duration - seg)))
 
             base_clip = fit_to_size(source.subclip(start_p, min(start_p + seg, source.duration)), target_size).set_fps(fps).set_duration(seg)
@@ -2134,13 +2143,13 @@ def main():
 
             st.markdown("---")
             mod_lab_on = False
-            mod_matrix_amount = 0.15
+            mod_matrix_amount = 0.35
             if MODULATION_LAB_AVAILABLE:
                 mod_lab_on = st.checkbox(
                     "🧪 Modulation Lab (beta): micro-variazione start su onset",
                     value=False,
                     key=f"mod_lab_on_{vj_genre}",
-                    help="Aggiunge una piccola perturbazione ADDITIVA al punto di "
+                    help="Aggiunge una perturbazione ADDITIVA al punto di "
                          "partenza di ogni frammento, pilotata da un inviluppo ADSR "
                          "triggerato sugli onset reali del brano (non sostituisce "
                          "nulla del sistema di taglio esistente: se disattivato, "
@@ -2148,14 +2157,15 @@ def main():
                 )
                 if mod_lab_on:
                     mod_matrix_amount = st.slider(
-                        "Ampiezza perturbazione (% del segmento)",
-                        min_value=0, max_value=40, value=15, step=1,
+                        "Ampiezza perturbazione (secondi)",
+                        min_value=0.0, max_value=1.5, value=0.35, step=0.05,
                         key=f"mod_lab_amount_{vj_genre}",
-                        help="0% = nessun effetto anche a checkbox attivo. "
-                             "Valori alti spostano di piu' il punto di partenza "
-                             "di ogni frammento rispetto a quanto scelto dal "
-                             "sistema anti-ripetizione a bucket."
-                    ) / 100.0
+                        help="0.0 = nessun effetto anche a checkbox attivo. "
+                             "Valore assoluto in secondi (non piu' percentuale "
+                             "del segmento): resta visibile anche su slice "
+                             "cortissime. Spostamento clampato dentro i bound "
+                             "validi del sorgente."
+                    )
             else:
                 st.caption(
                     "_Modulation Lab non disponibile: manca modulation_matrix.py "

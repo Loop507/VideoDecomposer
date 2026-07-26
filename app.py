@@ -2375,14 +2375,22 @@ def main():
                     _source_options = ["Nessuna (fallback: sfasamento stesso video)"]
                     _source_options += [f"Video {i+1} ({files[i].name[:14]})" for i in _loaded_idx]
                     _source_options += ["Carica video separato"]
+                    # Default: se c'e' almeno un video gia' caricato, si preseleziona
+                    # il primo come sorgente della striscia (indice 1 nella lista,
+                    # subito dopo "Nessuna"), cosi' la funzione e' visibile e attiva
+                    # da subito senza dover cliccare nulla manualmente.
+                    _default_src_idx = 1 if _loaded_idx else 0
                     stripe_source_choice = st.radio(
                         "Sorgente per la striscia", _source_options,
+                        index=_default_src_idx,
                         key=f"stripe_source_choice_{vj_genre}",
-                        help="Puoi usare uno degli stessi video già caricati "
-                             "sopra come contenuto della banda (nessun upload "
-                             "aggiuntivo necessario), oppure caricarne uno a "
-                             "parte."
+                        help="Scegli quale video mostrare nella banda: uno di "
+                             "quelli già caricati sopra (nessun upload "
+                             "aggiuntivo necessario), uno caricato a parte, "
+                             "oppure 'Nessuna' per il vecchio comportamento "
+                             "(sfasamento temporale della sequenza mixata)."
                     )
+                    st.caption(f"👉 Striscia userà: **{stripe_source_choice}**")
                     if stripe_source_choice == "Carica video separato":
                         stripe_video_file = st.file_uploader(
                             "Video per la striscia",

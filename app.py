@@ -504,6 +504,35 @@ def build_start_offset_matrix(onset_times, duration, attack=0.06, decay=0.35,
     return matrix
 
 
+def get_preview_frame_from_upload(uploaded_file, max_w=260):
+    """MODULATION LAB (UI): estrae un frame di anteprima (t=0) da un file
+    video caricato, ridimensionato per una preview leggera nel pannello
+    'Sorgenti caricate'. Usa un tempfile indipendente da quello creato in
+    fase di rendering (do_final): serve solo a mostrare un'anteprima, non
+    tocca in alcun modo la pipeline di generazione.
+
+    Non solleva mai eccezioni: l'anteprima e' un extra opzionale, non deve
+    mai poter bloccare l'app. Ritorna None se la decodifica fallisce.
+    """
+    try:
+        uploaded_file.seek(0)
+        tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+        with open(tmp_path, "wb") as f:
+            f.write(uploaded_file.read())
+        uploaded_file.seek(0)
+        clip = VideoFileClip(tmp_path)
+        frame = clip.get_frame(0)
+        h, w = frame.shape[:2]
+        if w > max_w:
+            scale = max_w / w
+            new_w, new_h = max_w, max(1, int(h * scale))
+            frame = np.array(Image.fromarray(frame).resize((new_w, new_h)))
+        clip.close()
+        return frame
+    except Exception:
+        return None
+
+
 def build_stripe_opacity_curve(onset_times, total_f, fps, attack=0.06, decay=0.35,
                                 sustain=0.65, release=0.6, amount=0.6):
     """MODULATION LAB: curva di opacita' [0..amount] per la 'striscia
@@ -1733,6 +1762,8 @@ def main():
                 if files[i]:
                     st.write(f"V{i+1}: {files[i].name[:18]}")
             st.caption("Tutti i video vengono usati in egual misura nel remix.")
+            st.markdown("---")
+            preview_slot_vd = st.container()
 
     with c2:
         if app_mode == "Decompose":
@@ -2323,6 +2354,52 @@ def main():
                     "nella stessa cartella dell'app (funzionalita' opzionale, "
                     "il resto dell'app funziona normalmente)._"
                 )
+
+            with preview_slot_vd:
+                st.subheader("Anteprima")
+                _prev_idx = next((i for i in range(4) if files[i]), None)
+                if _prev_idx is None:
+                    st.caption("Carica almeno un video per vedere l'anteprima.")
+                else:
+                    _prev_cache_key = f"{files[_prev_idx].name}_{files[_prev_idx].size}"
+                    if st.session_state.get("_vd_preview_key") != _prev_cache_key:
+                        st.session_state["_vd_preview_frame"] = get_preview_frame_from_upload(files[_prev_idx])
+                        st.session_state["_vd_preview_key"] = _prev_cache_key
+                    _prev_frame = st.session_state.get("_vd_preview_frame")
+                    if _prev_frame is None:
+                        st.caption("Impossibile leggere un frame di anteprima da questo video.")
+                    else:
+                        _pf = _prev_frame.copy()
+                        ph, pw = _pf.shape[:2]
+                        if stripe_mod_on:
+                            _VIOLET = np.array([120, 80, 220])
+                            if stripe_mod_orient == "Orizzontale":
+                                band_h = max(1, int(ph * stripe_mod_pct / 100.0))
+                                center = int(ph * stripe_mod_pos / 100.0)
+                                p0 = max(0, min(ph - band_h, center - band_h // 2))
+                                p1 = min(ph, p0 + band_h)
+                                _pf[p0:p1, :] = (_pf[p0:p1, :] * 0.35 + _VIOLET * 0.65).astype(np.uint8)
+                                if p0 > 1:
+                                    _pf[max(0, p0 - 2):p0, :] = [80, 40, 200]
+                                if p1 < ph:
+                                    _pf[p1:min(ph, p1 + 2), :] = [80, 40, 200]
+                            else:
+                                band_w = max(1, int(pw * stripe_mod_pct / 100.0))
+                                center = int(pw * stripe_mod_pos / 100.0)
+                                l0 = max(0, min(pw - band_w, center - band_w // 2))
+                                l1 = min(pw, l0 + band_w)
+                                _pf[:, l0:l1] = (_pf[:, l0:l1] * 0.35 + _VIOLET * 0.65).astype(np.uint8)
+                                if l0 > 1:
+                                    _pf[:, max(0, l0 - 2):l0] = [80, 40, 200]
+                                if l1 < pw:
+                                    _pf[:, l1:min(pw, l1 + 2)] = [80, 40, 200]
+                        st.image(
+                            _pf,
+                            caption=("Frame iniziale — banda viola = striscia selettiva attiva"
+                                     if stripe_mod_on else
+                                     "Frame iniziale (striscia selettiva disattivata)"),
+                            use_container_width=True
+                        )
 
             st.markdown("---")
             crossfade_on = st.toggle(

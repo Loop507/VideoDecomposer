@@ -558,25 +558,31 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
                             orientation="Orizzontale", time_offset=2.0,
                             stripe_source_get_frame=None,
                             stripe_source_duration=None,
-                            base_opacity=0.0):
+                            base_opacity=0.0,
+                            stripe_length_pct=100.0, stripe_length_pos_pct=50.0):
     """MODULATION LAB: 'striscia selettiva pulsante', ispirata al sistema a
     strisce di Recursive Cut Pro ma adattata alla pipeline di VideoDecomposer
     (post-processing sul clip GIA' composto, non un sistema multi-sorgente
     per-stripe come in RCP).
 
-    Una finestra (banda orizzontale o verticale, posizione e dimensione
-    configurabili) rivela contenuto ALTERNATIVO:
+    Una finestra rettangolare (non piu' necessariamente una banda edge-to-edge)
+    rivela contenuto ALTERNATIVO:
     - se stripe_source_get_frame e' fornita (uno degli altri video caricati,
-      o un video dedicato), la banda mostra QUEL video, in loop sulla
+      o un video dedicato), la finestra mostra QUEL video, in loop sulla
       propria durata;
-    - altrimenti, fallback: la banda mostra lo STESSO video preso
+    - altrimenti, fallback: la finestra mostra lo STESSO video preso
       'time_offset' secondi piu' avanti (piccolo sfasamento temporale).
 
-    L'opacita' della banda e' base_opacity (visibilita' "a riposo", costante)
-    PIU' il picco guidato da opacity_curve sugli onset (0 = nessun picco).
-    Con base_opacity=0 la banda e' invisibile fuori dai picchi (solo lampi
-    sul beat, comportamento originale); con base_opacity>0 resta visibile
-    anche a riposo e si intensifica sul beat.
+    Due assi indipendenti:
+    - stripe_pct/stripe_pos_pct: spessore e posizione lungo l'asse "corto"
+      (verticale se orientation='Orizzontale', orizzontale se 'Verticale').
+    - stripe_length_pct/stripe_length_pos_pct: lunghezza e posizione lungo
+      l'asse "lungo" (di default 100%/50% = copre l'intero lato, IDENTICO al
+      comportamento originale a piena banda; valori piu' bassi accorciano la
+      finestra invece di farla arrivare da un bordo all'altro).
+
+    L'opacita' e' base_opacity (visibilita' "a riposo", costante) PIU' il
+    picco guidato da opacity_curve sugli onset (0 = nessun picco).
 
     Puramente additivo: se opacity_curve e' None e base_opacity=0, ritorna
     il frame originale senza alcuna modifica.
@@ -605,22 +611,27 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
 
     if orientation == "Orizzontale":
         band_h = max(1, int(h * stripe_pct / 100.0))
-        center = int(h * stripe_pos_pct / 100.0)
-        p0 = max(0, min(h - band_h, center - band_h // 2))
+        center_h = int(h * stripe_pos_pct / 100.0)
+        p0 = max(0, min(h - band_h, center_h - band_h // 2))
         p1 = min(h, p0 + band_h)
-        frame[p0:p1, :] = (
-            frame[p0:p1, :].astype(np.float32) * (1 - opacity)
-            + alt_frame[p0:p1, :].astype(np.float32) * opacity
-        ).astype(np.uint8)
+        band_w = max(1, int(w * stripe_length_pct / 100.0))
+        center_w = int(w * stripe_length_pos_pct / 100.0)
+        l0 = max(0, min(w - band_w, center_w - band_w // 2))
+        l1 = min(w, l0 + band_w)
     else:
         band_w = max(1, int(w * stripe_pct / 100.0))
-        center = int(w * stripe_pos_pct / 100.0)
-        l0 = max(0, min(w - band_w, center - band_w // 2))
+        center_w = int(w * stripe_pos_pct / 100.0)
+        l0 = max(0, min(w - band_w, center_w - band_w // 2))
         l1 = min(w, l0 + band_w)
-        frame[:, l0:l1] = (
-            frame[:, l0:l1].astype(np.float32) * (1 - opacity)
-            + alt_frame[:, l0:l1].astype(np.float32) * opacity
-        ).astype(np.uint8)
+        band_h = max(1, int(h * stripe_length_pct / 100.0))
+        center_h = int(h * stripe_length_pos_pct / 100.0)
+        p0 = max(0, min(h - band_h, center_h - band_h // 2))
+        p1 = min(h, p0 + band_h)
+
+    frame[p0:p1, l0:l1] = (
+        frame[p0:p1, l0:l1].astype(np.float32) * (1 - opacity)
+        + alt_frame[p0:p1, l0:l1].astype(np.float32) * opacity
+    ).astype(np.uint8)
     return frame
 
 
@@ -2306,6 +2317,8 @@ def main():
                 stripe_mod_offset_s = 2.0
                 stripe_mod_amount = 0.6
                 stripe_base_opacity = 0.15
+                stripe_length_pct = 100.0
+                stripe_length_pos_pct = 50.0
                 stripe_source_choice = "Nessuna (fallback: sfasamento stesso video)"
                 stripe_video_file = None
                 if stripe_mod_on:
@@ -2319,6 +2332,13 @@ def main():
                             "Posizione banda (%)", min_value=0.0, max_value=100.0,
                             value=50.0, step=1.0, key=f"stripe_mod_pos_{vj_genre}"
                         )
+                        stripe_length_pct = st.slider(
+                            "Lunghezza banda (%)", min_value=5.0, max_value=100.0,
+                            value=100.0, step=5.0, key=f"stripe_length_pct_{vj_genre}",
+                            help="100% = banda edge-to-edge (comportamento originale). "
+                                 "Valori più bassi accorciano la banda invece di farla "
+                                 "arrivare da un bordo all'altro."
+                        )
                     with col_sm2:
                         stripe_mod_orient = st.radio(
                             "Orientamento", ["Orizzontale", "Verticale"],
@@ -2327,6 +2347,12 @@ def main():
                         stripe_mod_offset_s = st.slider(
                             "Sfasamento temporale (sec, solo fallback)", min_value=0.2, max_value=6.0,
                             value=2.0, step=0.2, key=f"stripe_mod_offset_{vj_genre}"
+                        )
+                        stripe_length_pos_pct = st.slider(
+                            "Posizione lunghezza (%)", min_value=0.0, max_value=100.0,
+                            value=50.0, step=1.0, key=f"stripe_length_pos_{vj_genre}",
+                            help="Dove si centra la banda lungo l'asse lungo, "
+                                 "utile solo se 'Lunghezza banda' è sotto il 100%."
                         )
                     col_sm3, col_sm4 = st.columns(2)
                     with col_sm3:
@@ -2371,6 +2397,8 @@ def main():
                 stripe_mod_offset_s = 2.0
                 stripe_mod_amount = 0.6
                 stripe_base_opacity = 0.15
+                stripe_length_pct = 100.0
+                stripe_length_pos_pct = 50.0
                 stripe_source_choice = "Nessuna (fallback: sfasamento stesso video)"
                 stripe_video_file = None
                 st.caption(
@@ -2423,35 +2451,42 @@ def main():
                             _VIOLET = np.array([120, 80, 220])
                             if stripe_mod_orient == "Orizzontale":
                                 band_h = max(1, int(ph * stripe_mod_pct / 100.0))
-                                center = int(ph * stripe_mod_pos / 100.0)
-                                p0 = max(0, min(ph - band_h, center - band_h // 2))
+                                center_h = int(ph * stripe_mod_pos / 100.0)
+                                p0 = max(0, min(ph - band_h, center_h - band_h // 2))
                                 p1 = min(ph, p0 + band_h)
-                                if _stripe_prev_frame is not None:
-                                    # Mostra DAVVERO il contenuto del video caricato per la
-                                    # striscia (non solo un tint indicativo): resize alla
-                                    # larghezza della preview, poi crop della sola banda.
-                                    _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
-                                    _pf[p0:p1, :] = _sp[p0:p1, :]
-                                else:
-                                    _pf[p0:p1, :] = (_pf[p0:p1, :] * 0.35 + _VIOLET * 0.65).astype(np.uint8)
-                                if p0 > 1:
-                                    _pf[max(0, p0 - 2):p0, :] = [80, 40, 200]
-                                if p1 < ph:
-                                    _pf[p1:min(ph, p1 + 2), :] = [80, 40, 200]
+                                band_w = max(1, int(pw * stripe_length_pct / 100.0))
+                                center_w = int(pw * stripe_length_pos_pct / 100.0)
+                                l0 = max(0, min(pw - band_w, center_w - band_w // 2))
+                                l1 = min(pw, l0 + band_w)
                             else:
                                 band_w = max(1, int(pw * stripe_mod_pct / 100.0))
-                                center = int(pw * stripe_mod_pos / 100.0)
-                                l0 = max(0, min(pw - band_w, center - band_w // 2))
+                                center_w = int(pw * stripe_mod_pos / 100.0)
+                                l0 = max(0, min(pw - band_w, center_w - band_w // 2))
                                 l1 = min(pw, l0 + band_w)
-                                if _stripe_prev_frame is not None:
-                                    _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
-                                    _pf[:, l0:l1] = _sp[:, l0:l1]
-                                else:
-                                    _pf[:, l0:l1] = (_pf[:, l0:l1] * 0.35 + _VIOLET * 0.65).astype(np.uint8)
-                                if l0 > 1:
-                                    _pf[:, max(0, l0 - 2):l0] = [80, 40, 200]
-                                if l1 < pw:
-                                    _pf[:, l1:min(pw, l1 + 2)] = [80, 40, 200]
+                                band_h = max(1, int(ph * stripe_length_pct / 100.0))
+                                center_h = int(ph * stripe_length_pos_pct / 100.0)
+                                p0 = max(0, min(ph - band_h, center_h - band_h // 2))
+                                p1 = min(ph, p0 + band_h)
+
+                            if _stripe_prev_frame is not None:
+                                # Mostra DAVVERO il contenuto del video scelto per la
+                                # striscia (non solo un tint indicativo): resize alla
+                                # dimensione della preview, poi crop della sola finestra.
+                                _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
+                                _pf[p0:p1, l0:l1] = _sp[p0:p1, l0:l1]
+                            else:
+                                _pf[p0:p1, l0:l1] = (
+                                    _pf[p0:p1, l0:l1] * 0.35 + _VIOLET * 0.65
+                                ).astype(np.uint8)
+                            # bordo violetto scuro attorno alla finestra, su tutti i lati
+                            if p0 > 1:
+                                _pf[max(0, p0 - 2):p0, l0:l1] = [80, 40, 200]
+                            if p1 < ph:
+                                _pf[p1:min(ph, p1 + 2), l0:l1] = [80, 40, 200]
+                            if l0 > 1:
+                                _pf[p0:p1, max(0, l0 - 2):l0] = [80, 40, 200]
+                            if l1 < pw:
+                                _pf[p0:p1, l1:min(pw, l1 + 2)] = [80, 40, 200]
                         _cap = "Frame iniziale (striscia selettiva disattivata)"
                         if stripe_mod_on:
                             _cap = ("Frame iniziale — banda = video dedicato caricato"
@@ -2900,7 +2935,9 @@ def main():
                             orientation=stripe_mod_orient, time_offset=stripe_mod_offset_s,
                             stripe_source_get_frame=_stripe_src_get_frame,
                             stripe_source_duration=_stripe_src_duration,
-                            base_opacity=stripe_base_opacity
+                            base_opacity=stripe_base_opacity,
+                            stripe_length_pct=stripe_length_pct,
+                            stripe_length_pos_pct=stripe_length_pos_pct
                         ))
                         extra_log += (
                             f"\n* Striscia selettiva: base {int(stripe_base_opacity*100)}% "

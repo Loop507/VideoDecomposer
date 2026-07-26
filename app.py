@@ -2371,6 +2371,21 @@ def main():
                     else:
                         _pf = _prev_frame.copy()
                         ph, pw = _pf.shape[:2]
+                        _stripe_prev_frame = None
+                        if stripe_mod_on and stripe_video_file is not None:
+                            _sprev_cache_key = f"{stripe_video_file.name}_{stripe_video_file.size}"
+                            if st.session_state.get("_vd_stripe_preview_key") != _sprev_cache_key:
+                                st.session_state["_vd_stripe_preview_frame"] = get_preview_frame_from_upload(
+                                    stripe_video_file, max_w=pw
+                                )
+                                st.session_state["_vd_stripe_preview_key"] = _sprev_cache_key
+                            _stripe_prev_frame = st.session_state.get("_vd_stripe_preview_frame")
+                            if _stripe_prev_frame is None:
+                                st.warning(
+                                    "⚠️ Il video caricato per la striscia non è leggibile "
+                                    "(formato non supportato o file corrotto): verrà usato "
+                                    "il fallback (stesso video sfasato nel tempo)."
+                                )
                         if stripe_mod_on:
                             _VIOLET = np.array([120, 80, 220])
                             if stripe_mod_orient == "Orizzontale":
@@ -2378,7 +2393,14 @@ def main():
                                 center = int(ph * stripe_mod_pos / 100.0)
                                 p0 = max(0, min(ph - band_h, center - band_h // 2))
                                 p1 = min(ph, p0 + band_h)
-                                _pf[p0:p1, :] = (_pf[p0:p1, :] * 0.35 + _VIOLET * 0.65).astype(np.uint8)
+                                if _stripe_prev_frame is not None:
+                                    # Mostra DAVVERO il contenuto del video caricato per la
+                                    # striscia (non solo un tint indicativo): resize alla
+                                    # larghezza della preview, poi crop della sola banda.
+                                    _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
+                                    _pf[p0:p1, :] = _sp[p0:p1, :]
+                                else:
+                                    _pf[p0:p1, :] = (_pf[p0:p1, :] * 0.35 + _VIOLET * 0.65).astype(np.uint8)
                                 if p0 > 1:
                                     _pf[max(0, p0 - 2):p0, :] = [80, 40, 200]
                                 if p1 < ph:
@@ -2388,16 +2410,23 @@ def main():
                                 center = int(pw * stripe_mod_pos / 100.0)
                                 l0 = max(0, min(pw - band_w, center - band_w // 2))
                                 l1 = min(pw, l0 + band_w)
-                                _pf[:, l0:l1] = (_pf[:, l0:l1] * 0.35 + _VIOLET * 0.65).astype(np.uint8)
+                                if _stripe_prev_frame is not None:
+                                    _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
+                                    _pf[:, l0:l1] = _sp[:, l0:l1]
+                                else:
+                                    _pf[:, l0:l1] = (_pf[:, l0:l1] * 0.35 + _VIOLET * 0.65).astype(np.uint8)
                                 if l0 > 1:
                                     _pf[:, max(0, l0 - 2):l0] = [80, 40, 200]
                                 if l1 < pw:
                                     _pf[:, l1:min(pw, l1 + 2)] = [80, 40, 200]
+                        _cap = "Frame iniziale (striscia selettiva disattivata)"
+                        if stripe_mod_on:
+                            _cap = ("Frame iniziale — banda = video dedicato caricato"
+                                    if _stripe_prev_frame is not None else
+                                    "Frame iniziale — banda viola = fallback (nessun video caricato)")
                         st.image(
                             _pf,
-                            caption=("Frame iniziale — banda viola = striscia selettiva attiva"
-                                     if stripe_mod_on else
-                                     "Frame iniziale (striscia selettiva disattivata)"),
+                            caption=_cap,
                             use_container_width=True
                         )
 
@@ -2789,15 +2818,27 @@ def main():
                     _stripe_src_get_frame = None
                     _stripe_src_duration = None
                     if stripe_mod_on and stripe_video_file is not None:
-                        _stripe_tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-                        with open(_stripe_tmp_path, "wb") as _sf:
-                            _sf.write(stripe_video_file.read())
-                        _stripe_src_clip = VideoFileClip(_stripe_tmp_path)
-                        _target_wh = tuple(final.size)
-                        if tuple(_stripe_src_clip.size) != _target_wh:
-                            _stripe_src_clip = fit_to_size(_stripe_src_clip, _target_wh)
-                        _stripe_src_get_frame = _stripe_src_clip.get_frame
-                        _stripe_src_duration = _stripe_src_clip.duration
+                        try:
+                            _stripe_tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+                            with open(_stripe_tmp_path, "wb") as _sf:
+                                _sf.write(stripe_video_file.read())
+                            _stripe_src_clip = VideoFileClip(_stripe_tmp_path)
+                            _target_wh = tuple(final.size)
+                            if tuple(_stripe_src_clip.size) != _target_wh:
+                                _stripe_src_clip = fit_to_size(_stripe_src_clip, _target_wh)
+                            _stripe_src_get_frame = _stripe_src_clip.get_frame
+                            _stripe_src_duration = _stripe_src_clip.duration
+                        except Exception as _e:
+                            # Non deve mai far crashare il render: se il video
+                            # per la striscia non e' decodificabile, si torna
+                            # semplicemente al fallback (stesso video sfasato
+                            # nel tempo), avvisando l'utente nel log finale.
+                            _stripe_src_get_frame = None
+                            _stripe_src_duration = None
+                            st.warning(
+                                f"⚠️ Video striscia non leggibile ({_e}): uso il fallback "
+                                f"(sfasamento {stripe_mod_offset_s}s dello stesso video)."
+                            )
 
                     if stripe_mod_on and _stripe_opacity_curve is not None:
                         final = final.fl(lambda gf, t: apply_selective_stripe(

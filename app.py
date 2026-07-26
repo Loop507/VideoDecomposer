@@ -10,94 +10,6 @@ from moviepy.editor import VideoFileClip, concatenate_videoclips, ImageClip, Com
 from moviepy.video.io.ffmpeg_reader import ffmpeg_parse_infos
 from PIL import Image
 import librosa
-from dataclasses import dataclass, field
-from typing import Callable, Optional
-
-# ---------------------------------------------------------------------------
-# MODULATION LAB (opzionale, additivo) — incollato qui per tenere l'app in un
-# unico file (nessuna dipendenza esterna da caricare separatamente su
-# Streamlit Cloud). Stesso codice di modulation_matrix.py, versione minima
-# (solo le due classi usate: EnvelopeADSR e ModulationMatrix).
-# ---------------------------------------------------------------------------
-MODULATION_LAB_AVAILABLE = True
-
-
-class EnvelopeADSR:
-    """Inviluppo ADSR offline, triggerato da una lista di timestamp (qui:
-    onset_times gia' rilevati da librosa) invece che da note MIDI. Ogni
-    trigger avvia un ciclo ADSR indipendente; gli inviluppi sovrapposti si
-    sommano e vengono clippati a 1.0 (come una voce polifonica che satura)."""
-
-    def __init__(self, trigger_times, attack=0.02, decay=0.08,
-                 sustain=0.6, release=0.25):
-        self.trigger_times = np.asarray(trigger_times)
-        self.attack = attack
-        self.decay = decay
-        self.sustain = sustain
-        self.release = release
-
-    def _single_env(self, dt):
-        env = np.zeros_like(dt)
-        a, d, r, s = self.attack, self.decay, self.release, self.sustain
-
-        mask_a = (dt >= 0) & (dt < a)
-        env[mask_a] = dt[mask_a] / max(a, 1e-6)
-
-        mask_d = (dt >= a) & (dt < a + d)
-        env[mask_d] = 1 - (1 - s) * (dt[mask_d] - a) / max(d, 1e-6)
-
-        sustain_end = a + d + 0.3
-        mask_s = (dt >= a + d) & (dt < sustain_end)
-        env[mask_s] = s
-
-        mask_r = (dt >= sustain_end) & (dt < sustain_end + r)
-        env[mask_r] = s * (1 - (dt[mask_r] - sustain_end) / max(r, 1e-6))
-
-        return np.clip(env, 0, 1)
-
-    def render(self, n_frames, fps):
-        t = np.arange(n_frames) / fps
-        total = np.zeros(n_frames)
-        for trig in self.trigger_times:
-            total += self._single_env(t - trig)
-        return np.clip(total, 0, 1)
-
-
-@dataclass
-class _ModRoute:
-    source: object
-    amount: float = 1.0
-    mode: str = "add"
-    curve: Optional[Callable] = None
-
-
-@dataclass
-class ModulationMatrix:
-    """Matrice sorgente->parametro->amount, pre-renderizzata (offline, non
-    live): un target (es. 'clip_start_offset') puo' avere N route che si
-    combinano additivamente o moltiplicativamente."""
-
-    base_values: dict = field(default_factory=dict)
-    routes: dict = field(default_factory=dict)
-
-    def add_route(self, target, source, amount=1.0, mode="add", curve=None):
-        self.routes.setdefault(target, []).append(
-            _ModRoute(source=source, amount=amount, mode=mode, curve=curve)
-        )
-
-    def render_target(self, target, n_frames, fps):
-        base = self.base_values.get(target, 0.0)
-        out = np.full(n_frames, base, dtype=float)
-        for route in self.routes.get(target, []):
-            val = route.source.render(n_frames, fps)
-            if route.curve is not None:
-                val = route.curve(val)
-            val = val * route.amount
-            out = out + val if route.mode == "add" else out * (1.0 + val)
-        return out
-# ---------------------------------------------------------------------------
-# FINE MODULATION LAB
-# ---------------------------------------------------------------------------
 
 # --- PATCH COMPATIBILITA' ---
 if hasattr(Image, 'Resampling'):
@@ -472,169 +384,6 @@ def local_bpm_to_subdivision_factor(local_bpm):
     return 4.0        # lento: raggruppa 4 beat, fraseggio ampio
 
 
-def build_start_offset_matrix(onset_times, duration, attack=0.06, decay=0.35,
-                               sustain=0.65, release=0.6, amount=0.35):
-    """MODULATION LAB: costruisce una ModulationMatrix con un solo target,
-    'clip_start_offset', pilotato da un EnvelopeADSR triggerato sugli onset
-    reali del brano gia' rilevati da analyze_audio.
-
-    E' puramente ADDITIVO e opzionale: se onset_times e' vuoto/None o il
-    modulo non e' disponibile, ritorna None e il chiamante deve semplicemente
-    non applicare nessuna perturbazione (comportamento identico a oggi).
-
-    amount : ampiezza massima della perturbazione in SECONDI ASSOLUTI (non piu'
-             frazione del segmento). Con frammenti molto corti (es. 0.1-0.3s,
-             tipico con subdivisione beat fitta) una perturbazione proporzionale
-             al segmento risultava impercettibile; in secondi fissi l'effetto
-             resta visibile indipendentemente da quanto e' corto il frammento
-             (viene comunque clampato dentro i bound del sorgente a valle).
-
-    attack/decay/sustain/release : di default piu' lenti rispetto alla prima
-             versione (era 0.02/0.1/0.3/0.2, "scatto" quasi impercettibile).
-             Con questi valori il "respiro" dura circa 1s dopo ogni onset,
-             quindi e' molto piu' probabile che un frammento lo catturi vicino
-             al picco invece che gia' rientrato a zero.
-    """
-    if not MODULATION_LAB_AVAILABLE or not onset_times:
-        return None
-    matrix = ModulationMatrix(base_values={"clip_start_offset": 0.0})
-    env = EnvelopeADSR(np.asarray(onset_times), attack=attack, decay=decay,
-                        sustain=sustain, release=release)
-    matrix.add_route("clip_start_offset", env, amount=amount, mode="add")
-    return matrix
-
-
-def get_preview_frame_from_upload(uploaded_file, max_w=260):
-    """MODULATION LAB (UI): estrae un frame di anteprima (t=0) da un file
-    video caricato, ridimensionato per una preview leggera nel pannello
-    'Sorgenti caricate'. Usa un tempfile indipendente da quello creato in
-    fase di rendering (do_final): serve solo a mostrare un'anteprima, non
-    tocca in alcun modo la pipeline di generazione.
-
-    Non solleva mai eccezioni: l'anteprima e' un extra opzionale, non deve
-    mai poter bloccare l'app. Ritorna None se la decodifica fallisce.
-    """
-    try:
-        uploaded_file.seek(0)
-        tmp_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-        with open(tmp_path, "wb") as f:
-            f.write(uploaded_file.read())
-        uploaded_file.seek(0)
-        clip = VideoFileClip(tmp_path)
-        frame = clip.get_frame(0)
-        h, w = frame.shape[:2]
-        if w > max_w:
-            scale = max_w / w
-            new_w, new_h = max_w, max(1, int(h * scale))
-            frame = np.array(Image.fromarray(frame).resize((new_w, new_h)))
-        clip.close()
-        return frame
-    except Exception:
-        return None
-
-
-def build_stripe_opacity_curve(onset_times, total_f, fps, attack=0.06, decay=0.35,
-                                sustain=0.65, release=0.6, amount=0.6):
-    """MODULATION LAB: curva di opacita' [0..amount] per la 'striscia
-    selettiva pulsante' (vedi apply_selective_stripe sotto). Stessa ADSR
-    triggerata sugli onset usata per clip_start_offset, ma qui il bersaglio
-    e' l'opacita' di una finestra visibile, non uno spostamento invisibile
-    del punto di taglio: e' il modo per rendere il respiro sugli onset
-    VISIBILE anche quando la struttura di taglio esistente e' gia' molto
-    solida (come nel caso di VideoDecomposer).
-
-    Ritorna None se non applicabile (nessun onset o modulo assente), cosi'
-    il chiamante puo' saltare interamente il post-processing.
-    """
-    if not MODULATION_LAB_AVAILABLE or not onset_times:
-        return None
-    env = EnvelopeADSR(np.asarray(onset_times), attack=attack, decay=decay,
-                        sustain=sustain, release=release)
-    return env.render(total_f, fps) * amount
-
-
-def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
-                            stripe_pct=18.0, stripe_pos_pct=50.0,
-                            orientation="Orizzontale", time_offset=2.0,
-                            stripe_source_get_frame=None,
-                            stripe_source_duration=None,
-                            base_opacity=0.0,
-                            stripe_length_pct=100.0, stripe_length_pos_pct=50.0):
-    """MODULATION LAB: 'striscia selettiva pulsante', ispirata al sistema a
-    strisce di Recursive Cut Pro ma adattata alla pipeline di VideoDecomposer
-    (post-processing sul clip GIA' composto, non un sistema multi-sorgente
-    per-stripe come in RCP).
-
-    Una finestra rettangolare (non piu' necessariamente una banda edge-to-edge)
-    rivela contenuto ALTERNATIVO:
-    - se stripe_source_get_frame e' fornita (uno degli altri video caricati,
-      o un video dedicato), la finestra mostra QUEL video, in loop sulla
-      propria durata;
-    - altrimenti, fallback: la finestra mostra lo STESSO video preso
-      'time_offset' secondi piu' avanti (piccolo sfasamento temporale).
-
-    Due assi indipendenti:
-    - stripe_pct/stripe_pos_pct: spessore e posizione lungo l'asse "corto"
-      (verticale se orientation='Orizzontale', orizzontale se 'Verticale').
-    - stripe_length_pct/stripe_length_pos_pct: lunghezza e posizione lungo
-      l'asse "lungo" (di default 100%/50% = copre l'intero lato, IDENTICO al
-      comportamento originale a piena banda; valori piu' bassi accorciano la
-      finestra invece di farla arrivare da un bordo all'altro).
-
-    L'opacita' e' base_opacity (visibilita' "a riposo", costante) PIU' il
-    picco guidato da opacity_curve sugli onset (0 = nessun picco).
-
-    Puramente additivo: se opacity_curve e' None e base_opacity=0, ritorna
-    il frame originale senza alcuna modifica.
-    """
-    frame = get_frame(t).copy()
-    pulse = 0.0
-    if opacity_curve is not None and len(opacity_curve) > 0:
-        idx = min(int(t * fps), len(opacity_curve) - 1)
-        pulse = float(opacity_curve[idx])
-    opacity = min(1.0, base_opacity + pulse)
-    if opacity <= 0.005:
-        return frame
-
-    h, w, _ = frame.shape
-
-    if stripe_source_get_frame is not None and stripe_source_duration:
-        t_src = t % max(stripe_source_duration, 0.001)
-        alt_frame = stripe_source_get_frame(t_src)
-        if alt_frame.shape[:2] != (h, w):
-            # sicurezza extra: se il resize a monte non ha combaciato
-            # esattamente, si evita un crash tagliando/ripetendo i bordi
-            alt_frame = np.resize(alt_frame, (h, w, 3))
-    else:
-        t_alt = (t + time_offset) % max(duration, 0.001)
-        alt_frame = get_frame(t_alt)
-
-    if orientation == "Orizzontale":
-        band_h = max(1, int(h * stripe_pct / 100.0))
-        center_h = int(h * stripe_pos_pct / 100.0)
-        p0 = max(0, min(h - band_h, center_h - band_h // 2))
-        p1 = min(h, p0 + band_h)
-        band_w = max(1, int(w * stripe_length_pct / 100.0))
-        center_w = int(w * stripe_length_pos_pct / 100.0)
-        l0 = max(0, min(w - band_w, center_w - band_w // 2))
-        l1 = min(w, l0 + band_w)
-    else:
-        band_w = max(1, int(w * stripe_pct / 100.0))
-        center_w = int(w * stripe_pos_pct / 100.0)
-        l0 = max(0, min(w - band_w, center_w - band_w // 2))
-        l1 = min(w, l0 + band_w)
-        band_h = max(1, int(h * stripe_length_pct / 100.0))
-        center_h = int(h * stripe_length_pos_pct / 100.0)
-        p0 = max(0, min(h - band_h, center_h - band_h // 2))
-        p1 = min(h, p0 + band_h)
-
-    frame[p0:p1, l0:l1] = (
-        frame[p0:p1, l0:l1].astype(np.float32) * (1 - opacity)
-        + alt_frame[p0:p1, l0:l1].astype(np.float32) * opacity
-    ).astype(np.uint8)
-    return frame
-
-
 # --- MOTORE PROCEDURALE (slit scan) ---
 def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, scan_mode,
                                 rms_envelope=None):
@@ -712,6 +461,55 @@ def concatenate_in_batches(clips, method="chain", batch_size=250):
     ]
     return concatenate_videoclips(batches, method=method)
 
+
+def crossfade_in_batches(clips, crossfade_dur, target_size, duration, batch_size=250):
+    """
+    Versione 'a blocchi' del crossfade tra slice, sullo stesso principio di
+    concatenate_in_batches: prima il crossfade veniva applicato con UN SOLO
+    CompositeVideoClip contenente TUTTI i frammenti — bypassando del tutto
+    il batching che concatenate_in_batches esiste apposta per fornire.
+    Con centinaia di frammenti (comune in VJ Mode automatico, dove il
+    crossfade e' acceso di default) questo significava che l'unica strada
+    protetta dall'overhead-non-lineare di MoviePy era quella SENZA crossfade
+    — la strada con crossfade (quella usata di default) non aveva nessuna
+    protezione, a prescindere da quanto la stima frammenti fosse tarata bene.
+
+    Qui il crossfade si applica DENTRO ogni blocco da `batch_size` frammenti
+    (un CompositeVideoClip piccolo per blocco, non uno enorme), poi i blocchi
+    vengono uniti con un taglio secco tramite concatenate_in_batches — si
+    perde una sola dissolvenza ogni `batch_size` tagli (1 su 250, impercettibile
+    su un video con centinaia di tagli) in cambio della stessa protezione
+    memoria che il resto della pipeline gia' ha.
+    """
+    if len(clips) <= batch_size:
+        return _crossfade_single_batch(clips, crossfade_dur, target_size, duration)
+
+    composed_batches = [
+        _crossfade_single_batch(clips[i:i + batch_size], crossfade_dur, target_size, None)
+        for i in range(0, len(clips), batch_size)
+    ]
+    return concatenate_in_batches(composed_batches, method="chain").set_duration(duration)
+
+
+def _crossfade_single_batch(clips, crossfade_dur, target_size, duration):
+    """Crossfade 'classico' (un CompositeVideoClip), ma solo su un blocco
+    limitato di clip — mai su migliaia insieme."""
+    positioned = []
+    t = 0.0
+    for i, clip in enumerate(clips):
+        if i == 0:
+            positioned.append(clip.set_start(0))
+            t = clip.duration
+        else:
+            cf = min(crossfade_dur, clip.duration * 0.4, clips[i - 1].duration * 0.4)
+            cf = max(cf, 0.0)
+            start_t = max(0.0, t - cf)
+            c = clip.crossfadein(cf) if cf > 0 else clip
+            positioned.append(c.set_start(start_t))
+            t = start_t + clip.duration
+    composed = CompositeVideoClip(positioned, size=target_size)
+    return composed.set_duration(min(t, duration) if duration is not None else t)
+
 def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       stutter_prob, pitch_glitch, p_bar,
                       beat_slice_mode=False, beat_times=None,
@@ -726,8 +524,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
                       manual_duration_mode="fixed", manual_duration_choices=None,
                       export_size=None, react_to_peaks=True,
                       cut_source="beat", onset_times=None,
-                      subdivision_coarsen=1.0,
-                      mod_matrix=None, mod_matrix_fps=None):
+                      subdivision_coarsen=1.0):
     """
     VJ Mode:
     - slice_dur       : durata base di ogni slice (manuale, es. 0.1 ... 2.0 s)
@@ -798,18 +595,6 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     all_clips = []
     total_fragments = 0
     curr_t = 0.0
-
-    # MODULATION LAB: curva di offset precalcolata UNA sola volta per l'intera
-    # durata (non ricalcolata ad ogni frammento). None se non attivata: in tal
-    # caso il ramo sotto (in fase di scelta di start_p) non fa nulla e il
-    # comportamento resta identico a prima dell'introduzione di questo blocco.
-    _mod_offset_curve = None
-    _mod_fps_ref = mod_matrix_fps or fps
-    if mod_matrix is not None:
-        _n_frames_mod = max(1, int(duration * _mod_fps_ref))
-        _mod_offset_curve = mod_matrix.render_target(
-            "clip_start_offset", _n_frames_mod, _mod_fps_ref
-        )
 
     # Bucket anti-ripetizione per VJ Mode (stesso sistema del VideoEngine)
     recent_cuts = {}
@@ -1199,20 +984,6 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
             k = pick_source_key()
             source = video_clips[k]
             start_p = pick_start_dj(source, k, seg)
-
-            # MODULATION LAB: perturbazione additiva dello start, ora in
-            # SECONDI ASSOLUTI (non piu' proporzionale a 'seg'): su slice
-            # cortissime (subdivisione beat fitta) una perturbazione in
-            # frazione del segmento risultava impercettibile. Clampata per
-            # restare dentro i bound validi del sorgente: mai sotto 0, mai
-            # oltre (source.duration - seg). Se _mod_offset_curve e' None
-            # (default) questo blocco e' un no-op e start_p resta esattamente
-            # quello scelto da pick_start_dj come prima.
-            if _mod_offset_curve is not None:
-                _idx = min(int(curr_t * _mod_fps_ref), len(_mod_offset_curve) - 1)
-                start_p = start_p + _mod_offset_curve[_idx]
-                start_p = max(0.0, min(start_p, max(0.0, source.duration - seg)))
-
             base_clip = fit_to_size(source.subclip(start_p, min(start_p + seg, source.duration)), target_size).set_fps(fps).set_duration(seg)
 
             if pitch_glitch and random.random() < 0.15:
@@ -1313,20 +1084,7 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
     cut_schedule = [c.duration for c in all_clips]
 
     if crossfade_dur > 0 and len(all_clips) > 1:
-        positioned = []
-        t = 0.0
-        for i, clip in enumerate(all_clips):
-            if i == 0:
-                positioned.append(clip.set_start(0))
-                t = clip.duration
-            else:
-                cf = min(crossfade_dur, clip.duration * 0.4, all_clips[i - 1].duration * 0.4)
-                cf = max(cf, 0.0)
-                start_t = max(0.0, t - cf)
-                c = clip.crossfadein(cf) if cf > 0 else clip
-                positioned.append(c.set_start(start_t))
-                t = start_t + clip.duration
-        final = CompositeVideoClip(positioned, size=target_size).set_duration(min(t, duration))
+        final = crossfade_in_batches(all_clips, crossfade_dur, target_size, duration)
     else:
         final = concatenate_in_batches(all_clips, method="chain").set_duration(duration)
     return final, total_fragments, cut_schedule
@@ -1778,8 +1536,6 @@ def main():
                 if files[i]:
                     st.write(f"V{i+1}: {files[i].name[:18]}")
             st.caption("Tutti i video vengono usati in egual misura nel remix.")
-            st.markdown("---")
-            preview_slot_vd = st.container()
 
     with c2:
         if app_mode == "Decompose":
@@ -2275,245 +2031,6 @@ def main():
             )
 
             st.markdown("---")
-            mod_lab_on = False
-            mod_matrix_amount = 0.35
-            if MODULATION_LAB_AVAILABLE:
-                mod_lab_on = st.checkbox(
-                    "🧪 Modulation Lab (beta): micro-variazione start su onset",
-                    value=False,
-                    key=f"mod_lab_on_{vj_genre}",
-                    help="Aggiunge una perturbazione ADDITIVA al punto di "
-                         "partenza di ogni frammento, pilotata da un inviluppo ADSR "
-                         "triggerato sugli onset reali del brano (non sostituisce "
-                         "nulla del sistema di taglio esistente: se disattivato, "
-                         "l'output e' identico a prima)."
-                )
-                if mod_lab_on:
-                    mod_matrix_amount = st.slider(
-                        "Ampiezza perturbazione (secondi)",
-                        min_value=0.0, max_value=1.5, value=0.35, step=0.05,
-                        key=f"mod_lab_amount_{vj_genre}",
-                        help="0.0 = nessun effetto anche a checkbox attivo. "
-                             "Valore assoluto in secondi (non piu' percentuale "
-                             "del segmento): resta visibile anche su slice "
-                             "cortissime. Spostamento clampato dentro i bound "
-                             "validi del sorgente."
-                    )
-
-                stripe_mod_on = st.checkbox(
-                    "🎞️ Striscia selettiva pulsante (beta)",
-                    value=False,
-                    key=f"stripe_mod_on_{vj_genre}",
-                    help="Una banda della cornice mostra un'altra fonte video "
-                         "(uno degli altri video caricati, oppure uno caricato "
-                         "apposta), con opacità che sale sugli onset reali del "
-                         "brano. Post-processing indipendente: non tocca "
-                         "generate_dj_remix. Spento = comportamento identico "
-                         "a prima."
-                )
-                stripe_mod_pct = 18.0
-                stripe_mod_pos = 50.0
-                stripe_mod_orient = "Orizzontale"
-                stripe_mod_offset_s = 2.0
-                stripe_mod_amount = 0.6
-                stripe_base_opacity = 0.15
-                stripe_length_pct = 100.0
-                stripe_length_pos_pct = 50.0
-                stripe_source_choice = "Nessuna (fallback: sfasamento stesso video)"
-                stripe_video_file = None
-                if stripe_mod_on:
-                    col_sm1, col_sm2 = st.columns(2)
-                    with col_sm1:
-                        stripe_mod_pct = st.slider(
-                            "Spessore banda (%)", min_value=4.0, max_value=50.0,
-                            value=18.0, step=1.0, key=f"stripe_mod_pct_{vj_genre}"
-                        )
-                        stripe_mod_pos = st.slider(
-                            "Posizione banda (%)", min_value=0.0, max_value=100.0,
-                            value=50.0, step=1.0, key=f"stripe_mod_pos_{vj_genre}"
-                        )
-                        stripe_length_pct = st.slider(
-                            "Lunghezza banda (%)", min_value=5.0, max_value=100.0,
-                            value=100.0, step=5.0, key=f"stripe_length_pct_{vj_genre}",
-                            help="100% = banda edge-to-edge (comportamento originale). "
-                                 "Valori più bassi accorciano la banda invece di farla "
-                                 "arrivare da un bordo all'altro."
-                        )
-                    with col_sm2:
-                        stripe_mod_orient = st.radio(
-                            "Orientamento", ["Orizzontale", "Verticale"],
-                            key=f"stripe_mod_orient_{vj_genre}", horizontal=True
-                        )
-                        stripe_mod_offset_s = st.slider(
-                            "Sfasamento temporale (sec, solo fallback)", min_value=0.2, max_value=6.0,
-                            value=2.0, step=0.2, key=f"stripe_mod_offset_{vj_genre}"
-                        )
-                        stripe_length_pos_pct = st.slider(
-                            "Posizione lunghezza (%)", min_value=0.0, max_value=100.0,
-                            value=50.0, step=1.0, key=f"stripe_length_pos_{vj_genre}",
-                            help="Dove si centra la banda lungo l'asse lungo, "
-                                 "utile solo se 'Lunghezza banda' è sotto il 100%."
-                        )
-                    col_sm3, col_sm4 = st.columns(2)
-                    with col_sm3:
-                        stripe_mod_amount = st.slider(
-                            "Intensità massima banda (%)", min_value=0, max_value=100,
-                            value=60, step=5, key=f"stripe_mod_amount_{vj_genre}",
-                            help="Picco di opacità raggiunto ad ogni onset."
-                        ) / 100.0
-                    with col_sm4:
-                        stripe_base_opacity = st.slider(
-                            "Opacità di base (%)", min_value=0, max_value=100,
-                            value=15, step=5, key=f"stripe_base_opacity_{vj_genre}",
-                            help="Opacità 'a riposo', tra un onset e l'altro. "
-                                 "0% = banda invisibile fuori dai picchi (solo "
-                                 "flash sul beat). Valori più alti = banda "
-                                 "sempre visibile, che si intensifica sul beat."
-                        ) / 100.0
-
-                    _loaded_idx = [i for i in range(4) if files[i]]
-                    _source_options = ["Nessuna (fallback: sfasamento stesso video)"]
-                    _source_options += [f"Video {i+1} ({files[i].name[:14]})" for i in _loaded_idx]
-                    _source_options += ["Carica video separato"]
-                    # Default: se c'e' almeno un video gia' caricato, si preseleziona
-                    # il primo come sorgente della striscia (indice 1 nella lista,
-                    # subito dopo "Nessuna"), cosi' la funzione e' visibile e attiva
-                    # da subito senza dover cliccare nulla manualmente.
-                    _default_src_idx = 1 if _loaded_idx else 0
-                    _radio_key = f"stripe_source_choice_{vj_genre}"
-                    # Sicurezza: se un video e' stato rimosso/sostituito dopo aver
-                    # gia' scelto "Video N (nomefile)", quella stringa esatta non e'
-                    # piu' tra le opzioni correnti -> st.radio andrebbe in crash.
-                    # Si resetta il valore salvato per tornare al default sicuro.
-                    if st.session_state.get(_radio_key) not in _source_options:
-                        st.session_state.pop(_radio_key, None)
-                    stripe_source_choice = st.radio(
-                        "Sorgente per la striscia", _source_options,
-                        index=_default_src_idx,
-                        key=_radio_key,
-                        help="Scegli quale video mostrare nella banda: uno di "
-                             "quelli già caricati sopra (nessun upload "
-                             "aggiuntivo necessario), uno caricato a parte, "
-                             "oppure 'Nessuna' per il vecchio comportamento "
-                             "(sfasamento temporale della sequenza mixata)."
-                    )
-                    st.caption(f"👉 Striscia userà: **{stripe_source_choice}**")
-                    if stripe_source_choice == "Carica video separato":
-                        stripe_video_file = st.file_uploader(
-                            "Video per la striscia",
-                            type=["mp4", "mov", "avi", "mkv"],
-                            key=f"stripe_video_{vj_genre}"
-                        )
-            else:
-                stripe_mod_on = False
-                stripe_mod_pct = 18.0
-                stripe_mod_pos = 50.0
-                stripe_mod_orient = "Orizzontale"
-                stripe_mod_offset_s = 2.0
-                stripe_mod_amount = 0.6
-                stripe_base_opacity = 0.15
-                stripe_length_pct = 100.0
-                stripe_length_pos_pct = 50.0
-                stripe_source_choice = "Nessuna (fallback: sfasamento stesso video)"
-                stripe_video_file = None
-                st.caption(
-                    "_Modulation Lab non disponibile: manca modulation_matrix.py "
-                    "nella stessa cartella dell'app (funzionalita' opzionale, "
-                    "il resto dell'app funziona normalmente)._"
-                )
-
-            with preview_slot_vd:
-                st.subheader("Anteprima")
-                _prev_idx = next((i for i in range(4) if files[i]), None)
-                if _prev_idx is None:
-                    st.caption("Carica almeno un video per vedere l'anteprima.")
-                else:
-                    _prev_cache_key = f"{files[_prev_idx].name}_{files[_prev_idx].size}"
-                    if st.session_state.get("_vd_preview_key") != _prev_cache_key:
-                        st.session_state["_vd_preview_frame"] = get_preview_frame_from_upload(files[_prev_idx])
-                        st.session_state["_vd_preview_key"] = _prev_cache_key
-                    _prev_frame = st.session_state.get("_vd_preview_frame")
-                    if _prev_frame is None:
-                        st.caption("Impossibile leggere un frame di anteprima da questo video.")
-                    else:
-                        _pf = _prev_frame.copy()
-                        ph, pw = _pf.shape[:2]
-                        _stripe_prev_frame = None
-                        if stripe_mod_on and stripe_source_choice != "Nessuna (fallback: sfasamento stesso video)":
-                            _stripe_prev_source = None
-                            if stripe_source_choice == "Carica video separato":
-                                _stripe_prev_source = stripe_video_file
-                            else:
-                                for _si in range(4):
-                                    if stripe_source_choice.startswith(f"Video {_si+1} ") and files[_si]:
-                                        _stripe_prev_source = files[_si]
-                                        break
-                            if _stripe_prev_source is not None:
-                                _sprev_cache_key = f"{_stripe_prev_source.name}_{_stripe_prev_source.size}"
-                                if st.session_state.get("_vd_stripe_preview_key") != _sprev_cache_key:
-                                    st.session_state["_vd_stripe_preview_frame"] = get_preview_frame_from_upload(
-                                        _stripe_prev_source, max_w=pw
-                                    )
-                                    st.session_state["_vd_stripe_preview_key"] = _sprev_cache_key
-                                _stripe_prev_frame = st.session_state.get("_vd_stripe_preview_frame")
-                                if _stripe_prev_frame is None:
-                                    st.warning(
-                                        "⚠️ La sorgente scelta per la striscia non è leggibile "
-                                        "(formato non supportato o file corrotto): verrà usato "
-                                        "il fallback (stesso video sfasato nel tempo)."
-                                    )
-                        if stripe_mod_on:
-                            _VIOLET = np.array([120, 80, 220])
-                            if stripe_mod_orient == "Orizzontale":
-                                band_h = max(1, int(ph * stripe_mod_pct / 100.0))
-                                center_h = int(ph * stripe_mod_pos / 100.0)
-                                p0 = max(0, min(ph - band_h, center_h - band_h // 2))
-                                p1 = min(ph, p0 + band_h)
-                                band_w = max(1, int(pw * stripe_length_pct / 100.0))
-                                center_w = int(pw * stripe_length_pos_pct / 100.0)
-                                l0 = max(0, min(pw - band_w, center_w - band_w // 2))
-                                l1 = min(pw, l0 + band_w)
-                            else:
-                                band_w = max(1, int(pw * stripe_mod_pct / 100.0))
-                                center_w = int(pw * stripe_mod_pos / 100.0)
-                                l0 = max(0, min(pw - band_w, center_w - band_w // 2))
-                                l1 = min(pw, l0 + band_w)
-                                band_h = max(1, int(ph * stripe_length_pct / 100.0))
-                                center_h = int(ph * stripe_length_pos_pct / 100.0)
-                                p0 = max(0, min(ph - band_h, center_h - band_h // 2))
-                                p1 = min(ph, p0 + band_h)
-
-                            if _stripe_prev_frame is not None:
-                                # Mostra DAVVERO il contenuto del video scelto per la
-                                # striscia (non solo un tint indicativo): resize alla
-                                # dimensione della preview, poi crop della sola finestra.
-                                _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
-                                _pf[p0:p1, l0:l1] = _sp[p0:p1, l0:l1]
-                            else:
-                                _pf[p0:p1, l0:l1] = (
-                                    _pf[p0:p1, l0:l1] * 0.35 + _VIOLET * 0.65
-                                ).astype(np.uint8)
-                            # bordo violetto scuro attorno alla finestra, su tutti i lati
-                            if p0 > 1:
-                                _pf[max(0, p0 - 2):p0, l0:l1] = [80, 40, 200]
-                            if p1 < ph:
-                                _pf[p1:min(ph, p1 + 2), l0:l1] = [80, 40, 200]
-                            if l0 > 1:
-                                _pf[p0:p1, max(0, l0 - 2):l0] = [80, 40, 200]
-                            if l1 < pw:
-                                _pf[p0:p1, l1:min(pw, l1 + 2)] = [80, 40, 200]
-                        _cap = "Frame iniziale (striscia selettiva disattivata)"
-                        if stripe_mod_on:
-                            _cap = ("Frame iniziale — banda = video dedicato caricato"
-                                    if _stripe_prev_frame is not None else
-                                    "Frame iniziale — banda viola = fallback (nessun video caricato)")
-                        st.image(
-                            _pf,
-                            caption=_cap,
-                            use_container_width=True
-                        )
-
-            st.markdown("---")
             crossfade_on = st.toggle(
                 "Crossfade tra slice", value=auto_vj,
                 key=f"crossfade_on_{vj_genre}",
@@ -2735,7 +2252,7 @@ def main():
                         st.session_state["_audio_cache_key"] = _audio_cache_key
                         st.session_state["_audio_cache"] = (beat_times, rms_envelope, decompose_band_envelope)
                     beat_count = len(beat_times)
-                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat or color_react_amount > 0 or saturation_react_amount > 0 or mod_lab_on or stripe_mod_on) and audio_file:
+                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat or color_react_amount > 0 or saturation_react_amount > 0) and audio_file:
                     if _audio_cache_key and st.session_state.get("_vj_audio_cache_key") == _audio_cache_key:
                         beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times = st.session_state["_vj_audio_cache"]
                     else:
@@ -2806,27 +2323,6 @@ def main():
                     # densita' di taglio reattiva e burst override.
                     _vj_rms_for_engine = vj_rms_envelope if (beat_slice_mode or freeze_on_beat) else None
                     _vj_band_for_engine = vj_band_envelope if (beat_slice_mode or freeze_on_beat) else None
-                    # MODULATION LAB: costruita solo se il toggle e' attivo E
-                    # ci sono onset disponibili. In ogni altro caso e' None,
-                    # quindi generate_dj_remix si comporta esattamente come
-                    # prima dell'introduzione di questa funzionalita'.
-                    _mod_matrix = None
-                    if mod_lab_on and vj_onset_times:
-                        _mod_matrix = build_start_offset_matrix(
-                            vj_onset_times, run_durata, amount=mod_matrix_amount
-                        )
-
-                    # MODULATION LAB: curva per la striscia selettiva pulsante,
-                    # indipendente da _mod_matrix (post-processing sul clip
-                    # gia' composto, non tocca generate_dj_remix). None se
-                    # disattivata o senza onset -> nessun impatto.
-                    _stripe_opacity_curve = None
-                    if stripe_mod_on and vj_onset_times:
-                        _stripe_opacity_curve = build_stripe_opacity_curve(
-                            vj_onset_times, max(1, int(run_durata * fps)), fps,
-                            amount=stripe_mod_amount
-                        )
-
                     final, total_frags, cut_schedule = generate_dj_remix(
                         engine.video_clips, run_durata, fps,
                         slice_dur, loop_reps, stutter_prob, pitch_glitch, p_bar,
@@ -2851,9 +2347,7 @@ def main():
                         react_to_peaks=react_to_peaks,
                         cut_source=cut_source,
                         onset_times=vj_onset_times,
-                        subdivision_coarsen=_auto_coarsen,
-                        mod_matrix=_mod_matrix,
-                        mod_matrix_fps=fps
+                        subdivision_coarsen=_auto_coarsen
                     )
                     mode_label = "VJ Mode"
                     if beat_slice_mode and beat_times:
@@ -2891,75 +2385,6 @@ def main():
                                   if audio_mix_mode in ("mix", "mix_decomposed") else "") + "\n"
                                  f"* Reattivita' multi-banda: {'ON' if _vj_band_for_engine else 'OFF'}\n"
                                  f"* Formato: {formato_label}")
-
-                    # MODULATION LAB: prepara la sorgente per la striscia
-                    # selettiva. Tre casi: (1) uno degli stessi video gia'
-                    # caricati sopra (nessun upload aggiuntivo: si riusa il
-                    # path gia' scritto su disco in 'paths'); (2) un video
-                    # caricato apposta; (3) nessuno -> resta il fallback
-                    # (stesso video sfasato nel tempo, gestito dentro
-                    # apply_selective_stripe quando stripe_source_get_frame
-                    # e' None). Resize SEMPLICE (stretch), non crop: il
-                    # contenuto della striscia non deve venire tagliato.
-                    _stripe_src_get_frame = None
-                    _stripe_src_duration = None
-                    _stripe_src_path = None
-                    if stripe_mod_on and stripe_source_choice != "Nessuna (fallback: sfasamento stesso video)":
-                        if stripe_source_choice == "Carica video separato" and stripe_video_file is not None:
-                            try:
-                                _stripe_src_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-                                with open(_stripe_src_path, "wb") as _sf:
-                                    _sf.write(stripe_video_file.read())
-                            except Exception as _e:
-                                _stripe_src_path = None
-                                st.warning(f"⚠️ Video striscia non leggibile ({_e}): uso il fallback.")
-                        else:
-                            # "Video N (nome file)" -> uno dei 4 gia' caricati:
-                            # riusa direttamente il path gia' scritto su disco.
-                            for _si in range(4):
-                                if stripe_source_choice.startswith(f"Video {_si+1} ") and _si in paths:
-                                    _stripe_src_path = paths[_si]
-                                    break
-
-                        if _stripe_src_path is not None:
-                            try:
-                                _stripe_src_clip = VideoFileClip(_stripe_src_path)
-                                _target_wh = tuple(final.size)
-                                if tuple(_stripe_src_clip.size) != _target_wh:
-                                    # resize SEMPLICE (stretch), non crop-to-fill:
-                                    # si vede l'intero fotogramma della sorgente,
-                                    # anche se il rapporto d'aspetto e' diverso.
-                                    _stripe_src_clip = _stripe_src_clip.resize(newsize=_target_wh)
-                                _stripe_src_get_frame = _stripe_src_clip.get_frame
-                                _stripe_src_duration = _stripe_src_clip.duration
-                            except Exception as _e:
-                                # Non deve mai far crashare il render: se la
-                                # sorgente scelta non e' decodificabile, si
-                                # torna al fallback, avvisando l'utente.
-                                _stripe_src_get_frame = None
-                                _stripe_src_duration = None
-                                st.warning(
-                                    f"⚠️ Sorgente striscia non leggibile ({_e}): uso il fallback "
-                                    f"(sfasamento {stripe_mod_offset_s}s dello stesso video)."
-                                )
-
-                    if stripe_mod_on and (stripe_base_opacity > 0 or _stripe_opacity_curve is not None):
-                        final = final.fl(lambda gf, t: apply_selective_stripe(
-                            gf, t, run_durata, fps, _stripe_opacity_curve,
-                            stripe_pct=stripe_mod_pct, stripe_pos_pct=stripe_mod_pos,
-                            orientation=stripe_mod_orient, time_offset=stripe_mod_offset_s,
-                            stripe_source_get_frame=_stripe_src_get_frame,
-                            stripe_source_duration=_stripe_src_duration,
-                            base_opacity=stripe_base_opacity,
-                            stripe_length_pct=stripe_length_pct,
-                            stripe_length_pos_pct=stripe_length_pos_pct
-                        ))
-                        extra_log += (
-                            f"\n* Striscia selettiva: base {int(stripe_base_opacity*100)}% "
-                            f"+ picco {int(stripe_mod_amount*100)}% su onset"
-                            + (" (video dedicato caricato)" if _stripe_src_get_frame is not None
-                               else f" (sfasamento {stripe_mod_offset_s}s stesso video)")
-                        )
 
                 _prof["Costruzione Sequenza"] = time.perf_counter() - _t_stage
 

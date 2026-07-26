@@ -602,9 +602,13 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
         t_src = t % max(stripe_source_duration, 0.001)
         alt_frame = stripe_source_get_frame(t_src)
         if alt_frame.shape[:2] != (h, w):
-            # sicurezza extra: se il resize a monte non ha combaciato
-            # esattamente, si evita un crash tagliando/ripetendo i bordi
-            alt_frame = np.resize(alt_frame, (h, w, 3))
+            # np.resize() NON ridimensiona l'immagine: reinterpreta il
+            # buffer piatto in una nuova forma, il che su dati immagine
+            # scrambla i pixel invece di scalarli. Qui serve un resize
+            # vero (interpolato) — questo path scatta raramente (solo se
+            # il resize a monte non ha combaciato esattamente), ma quando
+            # scatta deve comunque produrre un frame valido, non corrotto.
+            alt_frame = np.array(Image.fromarray(alt_frame).resize((w, h)))
     else:
         t_alt = (t + time_offset) % max(duration, 0.001)
         alt_frame = get_frame(t_alt)

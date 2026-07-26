@@ -2546,7 +2546,7 @@ def main():
                         st.session_state["_audio_cache_key"] = _audio_cache_key
                         st.session_state["_audio_cache"] = (beat_times, rms_envelope, decompose_band_envelope)
                     beat_count = len(beat_times)
-                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat or color_react_amount > 0 or saturation_react_amount > 0) and audio_file:
+                elif app_mode == "VJ Mode" and (beat_slice_mode or freeze_on_beat or color_react_amount > 0 or saturation_react_amount > 0 or mod_lab_on or stripe_mod_on) and audio_file:
                     if _audio_cache_key and st.session_state.get("_vj_audio_cache_key") == _audio_cache_key:
                         beat_times, vj_rms_envelope, vj_band_envelope, vj_onset_times = st.session_state["_vj_audio_cache"]
                     else:

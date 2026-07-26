@@ -589,7 +589,7 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
     """
     frame = get_frame(t).copy()
     pulse = 0.0
-    if opacity_curve is not None:
+    if opacity_curve is not None and len(opacity_curve) > 0:
         idx = min(int(t * fps), len(opacity_curve) - 1)
         pulse = float(opacity_curve[idx])
     opacity = min(1.0, base_opacity + pulse)
@@ -2380,10 +2380,17 @@ def main():
                     # subito dopo "Nessuna"), cosi' la funzione e' visibile e attiva
                     # da subito senza dover cliccare nulla manualmente.
                     _default_src_idx = 1 if _loaded_idx else 0
+                    _radio_key = f"stripe_source_choice_{vj_genre}"
+                    # Sicurezza: se un video e' stato rimosso/sostituito dopo aver
+                    # gia' scelto "Video N (nomefile)", quella stringa esatta non e'
+                    # piu' tra le opzioni correnti -> st.radio andrebbe in crash.
+                    # Si resetta il valore salvato per tornare al default sicuro.
+                    if st.session_state.get(_radio_key) not in _source_options:
+                        st.session_state.pop(_radio_key, None)
                     stripe_source_choice = st.radio(
                         "Sorgente per la striscia", _source_options,
                         index=_default_src_idx,
-                        key=f"stripe_source_choice_{vj_genre}",
+                        key=_radio_key,
                         help="Scegli quale video mostrare nella banda: uno di "
                              "quelli già caricati sopra (nessun upload "
                              "aggiuntivo necessario), uno caricato a parte, "
@@ -2816,7 +2823,7 @@ def main():
                     _stripe_opacity_curve = None
                     if stripe_mod_on and vj_onset_times:
                         _stripe_opacity_curve = build_stripe_opacity_curve(
-                            vj_onset_times, int(run_durata * fps), fps,
+                            vj_onset_times, max(1, int(run_durata * fps)), fps,
                             amount=stripe_mod_amount
                         )
 

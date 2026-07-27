@@ -559,9 +559,12 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
                             stripe_source_get_frame=None,
                             stripe_source_duration=None,
                             base_opacity=0.0,
-                            stripe_length_pct=100.0, stripe_length_pos_pct=50.0):
-    """MODULATION LAB: 'striscia selettiva pulsante', ispirata al sistema a
-    strisce di Recursive Cut Pro ma adattata alla pipeline di VideoDecomposer
+                            stripe_length_pct=100.0, stripe_length_pos_pct=50.0,
+                            content_follows_band=False,
+                            content_anchor_pos_pct=50.0,
+                            content_anchor_length_pos_pct=50.0):
+    """MODULATION LAB: 'banda selettiva', ispirata al sistema a strisce di
+    Recursive Cut Pro ma adattata alla pipeline di VideoDecomposer
     (post-processing sul clip GIA' composto, non un sistema multi-sorgente
     per-stripe come in RCP).
 
@@ -573,7 +576,7 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
     - altrimenti, fallback: la finestra mostra lo STESSO video preso
       'time_offset' secondi piu' avanti (piccolo sfasamento temporale).
 
-    Due assi indipendenti:
+    Due assi indipendenti per la POSIZIONE DELLA BANDA sullo schermo:
     - stripe_pct/stripe_pos_pct: spessore e posizione lungo l'asse "corto"
       (verticale se orientation='Orizzontale', orizzontale se 'Verticale').
     - stripe_length_pct/stripe_length_pos_pct: lunghezza e posizione lungo
@@ -581,8 +584,25 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
       comportamento originale a piena banda; valori piu' bassi accorciano la
       finestra invece di farla arrivare da un bordo all'altro).
 
+    content_follows_band : due modalita' per IL CONTENUTO mostrato dentro
+      la banda, indipendenti da dove la banda e' posizionata sullo schermo:
+      - False (default, comportamento originale): il contenuto e' campionato
+        dalla sorgente ALLE STESSE coordinate della banda sullo schermo —
+        muovendo la banda si rivela quindi contenuto DIVERSO (qualunque cosa
+        si trovi naturalmente in quella zona del frame sorgente in quel
+        momento). Un soggetto (es. un volto) NON si sposta insieme alla
+        banda: resta dove si trova naturalmente nel video sorgente.
+      - True (nuova): il contenuto viene campionato SEMPRE dallo stesso
+        punto di ancoraggio nel video sorgente (content_anchor_pos_pct /
+        content_anchor_length_pos_pct, indipendenti da dove la banda e'
+        posizionata), e quel ritaglio fisso viene disegnato ovunque la
+        banda si trovi sullo schermo. Il soggetto scelto (es. un occhio)
+        resta cosi' "agganciato" alla banda e si sposta rigidamente insieme
+        ad essa quando la sposti.
+
     L'opacita' e' base_opacity (visibilita' "a riposo", costante) PIU' il
-    picco guidato da opacity_curve sugli onset (0 = nessun picco).
+    picco guidato da opacity_curve sugli onset (0 = nessun picco: banda
+    puramente manuale/statica, nessun 'pulsare').
 
     Puramente additivo: se opacity_curve e' None e base_opacity=0, ritorna
     il frame originale senza alcuna modifica.
@@ -632,9 +652,39 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
         p0 = max(0, min(h - band_h, center_h - band_h // 2))
         p1 = min(h, p0 + band_h)
 
+    if content_follows_band:
+        # Stessa dimensione della banda (band_h x band_w), ma ancorata a un
+        # punto FISSO della sorgente, indipendente da dove la banda e'
+        # disegnata sullo schermo (p0:p1, l0:l1 sopra).
+        if orientation == "Orizzontale":
+            _center_hc = int(h * content_anchor_pos_pct / 100.0)
+            p0c = max(0, min(h - band_h, _center_hc - band_h // 2))
+            p1c = min(h, p0c + band_h)
+            _center_wc = int(w * content_anchor_length_pos_pct / 100.0)
+            l0c = max(0, min(w - band_w, _center_wc - band_w // 2))
+            l1c = min(w, l0c + band_w)
+        else:
+            _center_wc = int(w * content_anchor_pos_pct / 100.0)
+            l0c = max(0, min(w - band_w, _center_wc - band_w // 2))
+            l1c = min(w, l0c + band_w)
+            _center_hc = int(h * content_anchor_length_pos_pct / 100.0)
+            p0c = max(0, min(h - band_h, _center_hc - band_h // 2))
+            p1c = min(h, p0c + band_h)
+    else:
+        p0c, p1c, l0c, l1c = p0, p1, l0, l1
+
+    content_crop = alt_frame[p0c:p1c, l0c:l1c]
+    # Sicurezza: se per arrotondamenti le due regioni finiscono con
+    # dimensioni leggermente diverse (es. bordo immagine), si scala il
+    # ritaglio del contenuto sulla dimensione esatta della banda invece di
+    # rischiare un errore di shape-mismatch nel blend sotto.
+    _target_hw = (p1 - p0, l1 - l0)
+    if content_crop.shape[:2] != _target_hw:
+        content_crop = np.array(Image.fromarray(content_crop).resize((_target_hw[1], _target_hw[0])))
+
     frame[p0:p1, l0:l1] = (
         frame[p0:p1, l0:l1].astype(np.float32) * (1 - opacity)
-        + alt_frame[p0:p1, l0:l1].astype(np.float32) * opacity
+        + content_crop.astype(np.float32) * opacity
     ).astype(np.uint8)
     return frame
 
@@ -1662,6 +1712,8 @@ _REPORT_IT_EN = [
     ("beat rilevati", "beats detected"),
     ("onset rilevati", "onsets detected"),
     ("Colore reattivo al beat", "Beat-reactive Color"),
+    ("Banda selettiva", "Selective Band"),
+    ("contenuto ancorato a", "content anchored at"),
     ("subdivisione allargata", "subdivision widened"),
     ("(manuale)", "(manual)"),
     ("(rilevato)", "(detected)"),
@@ -2341,15 +2393,18 @@ def main():
                     )
 
                 stripe_mod_on = st.checkbox(
-                    "🎞️ Striscia selettiva pulsante (beta)",
+                    "🎞️ Banda selettiva (beta)",
                     value=False,
                     key=f"stripe_mod_on_{vj_genre}",
                     help="Una banda della cornice mostra un'altra fonte video "
                          "(uno degli altri video caricati, oppure uno caricato "
-                         "apposta), con opacità che sale sugli onset reali del "
-                         "brano. Post-processing indipendente: non tocca "
-                         "generate_dj_remix. Spento = comportamento identico "
-                         "a prima."
+                         "apposta). Puoi tenerla fissa (Intensità massima banda "
+                         "= 0%, solo Opacità di base) o farla pulsare sugli "
+                         "onset reali del brano. Post-processing indipendente: "
+                         "non tocca generate_dj_remix. Spento = comportamento "
+                         "identico a prima. '(beta)': funziona, ma ha ricevuto "
+                         "meno test delle altre funzioni — se dopo qualche uso "
+                         "va bene, dimmelo e tolgo l'etichetta."
                 )
                 stripe_mod_pct = 18.0
                 stripe_mod_pos = 50.0
@@ -2359,6 +2414,9 @@ def main():
                 stripe_base_opacity = 0.15
                 stripe_length_pct = 100.0
                 stripe_length_pos_pct = 50.0
+                stripe_content_follows = False
+                stripe_content_anchor_pos = 50.0
+                stripe_content_anchor_length_pos = 50.0
                 stripe_source_choice = "Nessuna (fallback: sfasamento stesso video)"
                 stripe_video_file = None
                 if stripe_mod_on:
@@ -2399,7 +2457,9 @@ def main():
                         stripe_mod_amount = st.slider(
                             "Intensità massima banda (%)", min_value=0, max_value=100,
                             value=60, step=5, key=f"stripe_mod_amount_{vj_genre}",
-                            help="Picco di opacità raggiunto ad ogni onset."
+                            help="Picco di opacità raggiunto ad ogni onset. 0% = "
+                                 "nessun pulsare: la banda resta ferma all'Opacità "
+                                 "di base, puramente manuale."
                         ) / 100.0
                     with col_sm4:
                         stripe_base_opacity = st.slider(
@@ -2410,6 +2470,42 @@ def main():
                                  "flash sul beat). Valori più alti = banda "
                                  "sempre visibile, che si intensifica sul beat."
                         ) / 100.0
+
+                    st.markdown("**Come si comporta il contenuto dentro la banda**")
+                    stripe_content_follows = st.radio(
+                        "Modalità contenuto", ["Video fisso", "Il contenuto segue la banda"],
+                        key=f"stripe_content_mode_{vj_genre}", horizontal=True,
+                        help="'Video fisso' (comportamento originale): muovendo "
+                             "la banda vedi contenuto DIVERSO — qualunque cosa "
+                             "si trovi in quella zona del video sorgente in quel "
+                             "momento (un volto NON si sposta con la banda, "
+                             "resta dov'è nel video sorgente). 'Il contenuto "
+                             "segue la banda': scegli un punto fisso nel video "
+                             "sorgente (es. un occhio) con gli slider sotto, e "
+                             "quel ritaglio si sposta rigidamente insieme alla "
+                             "banda ovunque tu la porti."
+                    ) == "Il contenuto segue la banda"
+                    if stripe_content_follows:
+                        col_sa1, col_sa2 = st.columns(2)
+                        with col_sa1:
+                            stripe_content_anchor_pos = st.slider(
+                                "Punto sorgente — asse corto (%)", min_value=0.0, max_value=100.0,
+                                value=50.0, step=1.0, key=f"stripe_anchor_pos_{vj_genre}",
+                                help="Dove si trova, nel video sorgente, il "
+                                     "contenuto da agganciare alla banda (stesso "
+                                     "asse di 'Posizione banda')."
+                            )
+                        with col_sa2:
+                            stripe_content_anchor_length_pos = st.slider(
+                                "Punto sorgente — asse lungo (%)", min_value=0.0, max_value=100.0,
+                                value=50.0, step=1.0, key=f"stripe_anchor_length_pos_{vj_genre}",
+                                help="Stesso concetto, sull'altro asse (utile se "
+                                     "'Lunghezza banda' è sotto il 100%)."
+                            )
+                        st.caption(
+                            "_Suggerimento: guarda l'anteprima del video sorgente qui sotto "
+                            "per capire dove posizionare il punto di ancoraggio._"
+                        )
 
                     _loaded_idx = [i for i in range(4) if files[i]]
                     _source_options = ["Nessuna (fallback: sfasamento stesso video)"]
@@ -2992,13 +3088,18 @@ def main():
                             stripe_source_duration=_stripe_src_duration,
                             base_opacity=stripe_base_opacity,
                             stripe_length_pct=stripe_length_pct,
-                            stripe_length_pos_pct=stripe_length_pos_pct
+                            stripe_length_pos_pct=stripe_length_pos_pct,
+                            content_follows_band=stripe_content_follows,
+                            content_anchor_pos_pct=stripe_content_anchor_pos,
+                            content_anchor_length_pos_pct=stripe_content_anchor_length_pos
                         ))
                         extra_log += (
-                            f"\n* Striscia selettiva: base {int(stripe_base_opacity*100)}% "
+                            f"\n* Banda selettiva: base {int(stripe_base_opacity*100)}% "
                             f"+ picco {int(stripe_mod_amount*100)}% su onset"
                             + (" (video dedicato caricato)" if _stripe_src_get_frame is not None
                                else f" (sfasamento {stripe_mod_offset_s}s stesso video)")
+                            + (f" — contenuto ancorato a {int(stripe_content_anchor_pos)}%/"
+                               f"{int(stripe_content_anchor_length_pos)}%" if stripe_content_follows else "")
                         )
 
                 _prof["Costruzione Sequenza"] = time.perf_counter() - _t_stage

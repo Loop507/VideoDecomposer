@@ -562,7 +562,8 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
                             stripe_length_pct=100.0, stripe_length_pos_pct=50.0,
                             content_follows_band=False,
                             content_anchor_pos_pct=50.0,
-                            content_anchor_length_pos_pct=50.0):
+                            content_anchor_length_pos_pct=50.0,
+                            frozen_content=None):
     """MODULATION LAB: 'banda selettiva', ispirata al sistema a strisce di
     Recursive Cut Pro ma adattata alla pipeline di VideoDecomposer
     (post-processing sul clip GIA' composto, non un sistema multi-sorgente
@@ -570,6 +571,13 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
 
     Una finestra rettangolare (non piu' necessariamente una banda edge-to-edge)
     rivela contenuto ALTERNATIVO:
+    - se frozen_content e' fornito (un ritaglio catturato con il bottone
+      'Cattura' in UI, immagine fissa): la banda mostra SEMPRE quella stessa
+      immagine statica, a qualunque istante t — nessun campionamento dal
+      video, nessuna dipendenza dal tempo. E' il modo piu' diretto per
+      'fermare' un soggetto e spostarlo liberamente con 'Posizione banda',
+      dato che il contenuto e' gia' fissato una volta per tutte al momento
+      della cattura;
     - se stripe_source_get_frame e' fornita (uno degli altri video caricati,
       o un video dedicato), la finestra mostra QUEL video, in loop sulla
       propria durata;
@@ -584,8 +592,10 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
       comportamento originale a piena banda; valori piu' bassi accorciano la
       finestra invece di farla arrivare da un bordo all'altro).
 
-    content_follows_band : due modalita' per IL CONTENUTO mostrato dentro
-      la banda, indipendenti da dove la banda e' posizionata sullo schermo:
+    content_follows_band : (ignorato se frozen_content e' fornito) due
+      modalita' per IL CONTENUTO mostrato dentro la banda quando si campiona
+      dal video dal vivo, indipendenti da dove la banda e' posizionata sullo
+      schermo:
       - False (default, comportamento originale): il contenuto e' campionato
         dalla sorgente ALLE STESSE coordinate della banda sullo schermo —
         muovendo la banda si rivela quindi contenuto DIVERSO (qualunque cosa
@@ -595,10 +605,10 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
       - True (nuova): il contenuto viene campionato SEMPRE dallo stesso
         punto di ancoraggio nel video sorgente (content_anchor_pos_pct /
         content_anchor_length_pos_pct, indipendenti da dove la banda e'
-        posizionata), e quel ritaglio fisso viene disegnato ovunque la
-        banda si trovi sullo schermo. Il soggetto scelto (es. un occhio)
-        resta cosi' "agganciato" alla banda e si sposta rigidamente insieme
-        ad essa quando la sposti.
+        posizionata), e quel ritaglio (che pero' continua a cambiare nel
+        TEMPO, seguendo il video dal vivo) viene disegnato ovunque la banda
+        si trovi sullo schermo. Per un soggetto che resta identico anche nel
+        tempo (una vera immagine fissa), usare invece frozen_content.
 
     L'opacita' e' base_opacity (visibilita' "a riposo", costante) PIU' il
     picco guidato da opacity_curve sugli onset (0 = nessun picco: banda
@@ -618,20 +628,21 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
 
     h, w, _ = frame.shape
 
-    if stripe_source_get_frame is not None and stripe_source_duration:
-        t_src = t % max(stripe_source_duration, 0.001)
-        alt_frame = stripe_source_get_frame(t_src)
-        if alt_frame.shape[:2] != (h, w):
-            # np.resize() NON ridimensiona l'immagine: reinterpreta il
-            # buffer piatto in una nuova forma, il che su dati immagine
-            # scrambla i pixel invece di scalarli. Qui serve un resize
-            # vero (interpolato) — questo path scatta raramente (solo se
-            # il resize a monte non ha combaciato esattamente), ma quando
-            # scatta deve comunque produrre un frame valido, non corrotto.
-            alt_frame = np.array(Image.fromarray(alt_frame).resize((w, h)))
-    else:
-        t_alt = (t + time_offset) % max(duration, 0.001)
-        alt_frame = get_frame(t_alt)
+    if frozen_content is None:
+        if stripe_source_get_frame is not None and stripe_source_duration:
+            t_src = t % max(stripe_source_duration, 0.001)
+            alt_frame = stripe_source_get_frame(t_src)
+            if alt_frame.shape[:2] != (h, w):
+                # np.resize() NON ridimensiona l'immagine: reinterpreta il
+                # buffer piatto in una nuova forma, il che su dati immagine
+                # scrambla i pixel invece di scalarli. Qui serve un resize
+                # vero (interpolato) — questo path scatta raramente (solo se
+                # il resize a monte non ha combaciato esattamente), ma quando
+                # scatta deve comunque produrre un frame valido, non corrotto.
+                alt_frame = np.array(Image.fromarray(alt_frame).resize((w, h)))
+        else:
+            t_alt = (t + time_offset) % max(duration, 0.001)
+            alt_frame = get_frame(t_alt)
 
     if orientation == "Orizzontale":
         band_h = max(1, int(h * stripe_pct / 100.0))
@@ -652,7 +663,7 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
         p0 = max(0, min(h - band_h, center_h - band_h // 2))
         p1 = min(h, p0 + band_h)
 
-    if content_follows_band:
+    if content_follows_band and frozen_content is None:
         # Stessa dimensione della banda (band_h x band_w), ma ancorata a un
         # punto FISSO della sorgente, indipendente da dove la banda e'
         # disegnata sullo schermo (p0:p1, l0:l1 sopra).
@@ -670,17 +681,24 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
             _center_hc = int(h * content_anchor_length_pos_pct / 100.0)
             p0c = max(0, min(h - band_h, _center_hc - band_h // 2))
             p1c = min(h, p0c + band_h)
-    else:
+    elif frozen_content is None:
         p0c, p1c, l0c, l1c = p0, p1, l0, l1
 
-    content_crop = alt_frame[p0c:p1c, l0c:l1c]
-    # Sicurezza: se per arrotondamenti le due regioni finiscono con
-    # dimensioni leggermente diverse (es. bordo immagine), si scala il
-    # ritaglio del contenuto sulla dimensione esatta della banda invece di
-    # rischiare un errore di shape-mismatch nel blend sotto.
-    _target_hw = (p1 - p0, l1 - l0)
-    if content_crop.shape[:2] != _target_hw:
-        content_crop = np.array(Image.fromarray(content_crop).resize((_target_hw[1], _target_hw[0])))
+    if frozen_content is not None:
+        # Immagine catturata, fissa: nessun campionamento dal video, si
+        # ridimensiona solo alla dimensione ESATTA della banda in questo
+        # istante (che puo' cambiare se lo spessore/lunghezza banda vengono
+        # modificati) e si disegna cosi' com'e', identica ad ogni frame.
+        content_crop = np.array(Image.fromarray(frozen_content).resize((l1 - l0, p1 - p0)))
+    else:
+        content_crop = alt_frame[p0c:p1c, l0c:l1c]
+        # Sicurezza: se per arrotondamenti le due regioni finiscono con
+        # dimensioni leggermente diverse (es. bordo immagine), si scala il
+        # ritaglio del contenuto sulla dimensione esatta della banda invece di
+        # rischiare un errore di shape-mismatch nel blend sotto.
+        _target_hw = (p1 - p0, l1 - l0)
+        if content_crop.shape[:2] != _target_hw:
+            content_crop = np.array(Image.fromarray(content_crop).resize((_target_hw[1], _target_hw[0])))
 
     frame[p0:p1, l0:l1] = (
         frame[p0:p1, l0:l1].astype(np.float32) * (1 - opacity)
@@ -1714,6 +1732,7 @@ _REPORT_IT_EN = [
     ("Colore reattivo al beat", "Beat-reactive Color"),
     ("Banda selettiva", "Selective Band"),
     ("contenuto ancorato a", "content anchored at"),
+    ("immagine catturata fissa", "captured static image"),
     ("subdivisione allargata", "subdivision widened"),
     ("(manuale)", "(manual)"),
     ("(rilevato)", "(detected)"),
@@ -2417,6 +2436,8 @@ def main():
                 stripe_content_follows = False
                 stripe_content_anchor_pos = 50.0
                 stripe_content_anchor_length_pos = 50.0
+                stripe_use_frozen = False
+                stripe_frozen_crop = None
                 stripe_source_choice = "Nessuna (fallback: sfasamento stesso video)"
                 stripe_video_file = None
                 if stripe_mod_on:
@@ -2640,29 +2661,41 @@ def main():
                                 # ignora del tutto gli slider di ancoraggio e sembra
                                 # che l'ancoraggio non faccia nulla (anche se nel
                                 # render vero funziona) perche' non lo mostra mai.
-                                _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
-                                if stripe_content_follows:
-                                    if stripe_mod_orient == "Orizzontale":
-                                        _chc = int(ph * stripe_content_anchor_pos / 100.0)
-                                        p0c = max(0, min(ph - band_h, _chc - band_h // 2))
-                                        p1c = min(ph, p0c + band_h)
-                                        _cwc = int(pw * stripe_content_anchor_length_pos / 100.0)
-                                        l0c = max(0, min(pw - band_w, _cwc - band_w // 2))
-                                        l1c = min(pw, l0c + band_w)
-                                    else:
-                                        _cwc = int(pw * stripe_content_anchor_pos / 100.0)
-                                        l0c = max(0, min(pw - band_w, _cwc - band_w // 2))
-                                        l1c = min(pw, l0c + band_w)
-                                        _chc = int(ph * stripe_content_anchor_length_pos / 100.0)
-                                        p0c = max(0, min(ph - band_h, _chc - band_h // 2))
-                                        p1c = min(ph, p0c + band_h)
-                                else:
-                                    p0c, p1c, l0c, l1c = p0, p1, l0, l1
-                                _content_crop = _sp[p0c:p1c, l0c:l1c]
-                                if _content_crop.shape[:2] != (p1 - p0, l1 - l0):
+                                # Il checkbox 'usa ritaglio catturato' vive PIU' AVANTI
+                                # nel codice (sotto l'immagine), ma il suo valore va letto
+                                # gia' qui da session_state per riflettere lo stato
+                                # 'congelato' nella STESSA passata, non solo al rerun
+                                # successivo.
+                                _frozen_now = st.session_state.get(f"_frozen_stripe_crop_{vj_genre}")
+                                _use_frozen_now = st.session_state.get(f"use_frozen_stripe_{vj_genre}", True)
+                                if _frozen_now is not None and _use_frozen_now:
                                     _content_crop = np.array(
-                                        Image.fromarray(_content_crop).resize((l1 - l0, p1 - p0))
+                                        Image.fromarray(_frozen_now).resize((l1 - l0, p1 - p0))
                                     )
+                                else:
+                                    _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
+                                    if stripe_content_follows:
+                                        if stripe_mod_orient == "Orizzontale":
+                                            _chc = int(ph * stripe_content_anchor_pos / 100.0)
+                                            p0c = max(0, min(ph - band_h, _chc - band_h // 2))
+                                            p1c = min(ph, p0c + band_h)
+                                            _cwc = int(pw * stripe_content_anchor_length_pos / 100.0)
+                                            l0c = max(0, min(pw - band_w, _cwc - band_w // 2))
+                                            l1c = min(pw, l0c + band_w)
+                                        else:
+                                            _cwc = int(pw * stripe_content_anchor_pos / 100.0)
+                                            l0c = max(0, min(pw - band_w, _cwc - band_w // 2))
+                                            l1c = min(pw, l0c + band_w)
+                                            _chc = int(ph * stripe_content_anchor_length_pos / 100.0)
+                                            p0c = max(0, min(ph - band_h, _chc - band_h // 2))
+                                            p1c = min(ph, p0c + band_h)
+                                    else:
+                                        p0c, p1c, l0c, l1c = p0, p1, l0, l1
+                                    _content_crop = _sp[p0c:p1c, l0c:l1c]
+                                    if _content_crop.shape[:2] != (p1 - p0, l1 - l0):
+                                        _content_crop = np.array(
+                                            Image.fromarray(_content_crop).resize((l1 - l0, p1 - p0))
+                                        )
                                 _pf[p0:p1, l0:l1] = _content_crop
                             else:
                                 _pf[p0:p1, l0:l1] = (
@@ -2687,6 +2720,70 @@ def main():
                             caption=_cap,
                             use_container_width=True
                         )
+                        if stripe_mod_on and _stripe_prev_frame is not None:
+                            col_cap1, col_cap2 = st.columns([2, 1])
+                            with col_cap1:
+                                if st.button(
+                                    "📸 Cattura questo ritaglio come immagine fissa",
+                                    key=f"capture_stripe_btn_{vj_genre}",
+                                    help="Congela il contenuto mostrato ora nella banda "
+                                         "(rilettura ad alta risoluzione dal video sorgente, "
+                                         "non dall'anteprima ridotta) come immagine statica. "
+                                         "Dopo la cattura puoi spostarla liberamente con "
+                                         "'Posizione banda' senza che cambi più nel tempo."
+                                ):
+                                    _hq_frame = get_preview_frame_from_upload(_stripe_prev_source, max_w=1920)
+                                    if _hq_frame is None:
+                                        st.warning(
+                                            "⚠️ Non sono riuscito a rileggere il video ad alta "
+                                            "risoluzione per la cattura."
+                                        )
+                                    else:
+                                        _hh, _hw = _hq_frame.shape[:2]
+                                        _hanchor_pos = stripe_content_anchor_pos if stripe_content_follows else stripe_mod_pos
+                                        _hanchor_len = stripe_content_anchor_length_pos if stripe_content_follows else stripe_length_pos_pct
+                                        if stripe_mod_orient == "Orizzontale":
+                                            _hband_h = max(1, int(_hh * stripe_mod_pct / 100.0))
+                                            _hband_w = max(1, int(_hw * stripe_length_pct / 100.0))
+                                            _hchc = int(_hh * _hanchor_pos / 100.0)
+                                            _hp0 = max(0, min(_hh - _hband_h, _hchc - _hband_h // 2))
+                                            _hp1 = min(_hh, _hp0 + _hband_h)
+                                            _hcwc = int(_hw * _hanchor_len / 100.0)
+                                            _hl0 = max(0, min(_hw - _hband_w, _hcwc - _hband_w // 2))
+                                            _hl1 = min(_hw, _hl0 + _hband_w)
+                                        else:
+                                            _hband_w = max(1, int(_hw * stripe_mod_pct / 100.0))
+                                            _hband_h = max(1, int(_hh * stripe_length_pct / 100.0))
+                                            _hcwc = int(_hw * _hanchor_pos / 100.0)
+                                            _hl0 = max(0, min(_hw - _hband_w, _hcwc - _hband_w // 2))
+                                            _hl1 = min(_hw, _hl0 + _hband_w)
+                                            _hchc = int(_hh * _hanchor_len / 100.0)
+                                            _hp0 = max(0, min(_hh - _hband_h, _hchc - _hband_h // 2))
+                                            _hp1 = min(_hh, _hp0 + _hband_h)
+                                        st.session_state[f"_frozen_stripe_crop_{vj_genre}"] = (
+                                            _hq_frame[_hp0:_hp1, _hl0:_hl1].copy()
+                                        )
+                                        st.success("Ritaglio catturato — spunta 'Usa il ritaglio catturato' qui sotto.")
+                            with col_cap2:
+                                if st.session_state.get(f"_frozen_stripe_crop_{vj_genre}") is not None:
+                                    if st.button("🗑️ Rimuovi", key=f"clear_frozen_stripe_{vj_genre}"):
+                                        st.session_state.pop(f"_frozen_stripe_crop_{vj_genre}", None)
+                                        st.rerun()
+
+                        stripe_frozen_crop = st.session_state.get(f"_frozen_stripe_crop_{vj_genre}") if stripe_mod_on else None
+                        if stripe_mod_on and stripe_frozen_crop is not None:
+                            _col_fz1, _col_fz2 = st.columns([1, 2])
+                            with _col_fz1:
+                                st.image(stripe_frozen_crop, caption="Catturato")
+                            with _col_fz2:
+                                stripe_use_frozen = st.checkbox(
+                                    "Usa il ritaglio catturato (immagine fissa)",
+                                    value=True, key=f"use_frozen_stripe_{vj_genre}",
+                                    help="La banda mostrerà questa immagine fissa invece del "
+                                         "video dal vivo — spostala ovunque con 'Posizione "
+                                         "banda' senza che il contenuto cambi mai nel tempo. "
+                                         "Despunta per tornare a mostrare il video dal vivo."
+                                )
 
             st.markdown("---")
             crossfade_on = st.toggle(
@@ -3130,7 +3227,8 @@ def main():
                             stripe_length_pos_pct=stripe_length_pos_pct,
                             content_follows_band=stripe_content_follows,
                             content_anchor_pos_pct=stripe_content_anchor_pos,
-                            content_anchor_length_pos_pct=stripe_content_anchor_length_pos
+                            content_anchor_length_pos_pct=stripe_content_anchor_length_pos,
+                            frozen_content=(stripe_frozen_crop if stripe_use_frozen else None)
                         ))
                         extra_log += (
                             f"\n* Banda selettiva: base {int(stripe_base_opacity*100)}% "
@@ -3139,6 +3237,7 @@ def main():
                                else f" (sfasamento {stripe_mod_offset_s}s stesso video)")
                             + (f" — contenuto ancorato a {int(stripe_content_anchor_pos)}%/"
                                f"{int(stripe_content_anchor_length_pos)}%" if stripe_content_follows else "")
+                            + (" — immagine catturata fissa" if stripe_use_frozen and stripe_frozen_crop is not None else "")
                         )
 
                 _prof["Costruzione Sequenza"] = time.perf_counter() - _t_stage

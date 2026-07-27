@@ -2721,6 +2721,35 @@ def main():
                             use_container_width=True
                         )
                         if stripe_mod_on and _stripe_prev_frame is not None:
+                            def _capture_framing_cb(_vj_genre=vj_genre, _pos=stripe_mod_pos, _len_pos=stripe_length_pos_pct):
+                                # on_click gira PRIMA del rerun dello script: a
+                                # questo punto il radio/slider sotto non sono
+                                # ancora stati ridisegnati in QUESTO nuovo run,
+                                # quindi impostare session_state qui e' sicuro
+                                # (farlo dentro il corpo dell'if st.button, DOPO
+                                # che quei widget erano gia' stati disegnati in
+                                # questo stesso passaggio, darebbe invece
+                                # 'cannot be modified after widget has been
+                                # instantiated').
+                                st.session_state[f"stripe_content_mode_{_vj_genre}"] = "Il contenuto segue la banda"
+                                st.session_state[f"stripe_anchor_pos_{_vj_genre}"] = _pos
+                                st.session_state[f"stripe_anchor_length_pos_{_vj_genre}"] = _len_pos
+                            st.button(
+                                "🎥 Cattura questa inquadratura come punto di ancoraggio",
+                                key=f"capture_framing_btn_{vj_genre}",
+                                on_click=_capture_framing_cb,
+                                help="Diverso dalla cattura immagine sotto: qui NON si "
+                                     "congela un fotogramma, si blocca solo la ZONA (la "
+                                     "porzione di spazio) che la banda sta mostrando ORA "
+                                     "in anteprima — il contenuto continua a essere video "
+                                     "vivo, in movimento, ma sempre da quella stessa zona "
+                                     "del video sorgente, ovunque sposti poi la banda con "
+                                     "'Posizione banda'. Usa gli slider di posizione sopra "
+                                     "per inquadrare il soggetto (es. un occhio) qui in "
+                                     "anteprima, poi premi questo bottone invece di tarare "
+                                     "a mano gli slider 'Punto sorgente'."
+                            )
+                        if stripe_mod_on and _stripe_prev_frame is not None:
                             col_cap1, col_cap2 = st.columns([2, 1])
                             with col_cap1:
                                 if st.button(

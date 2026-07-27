@@ -2506,6 +2506,17 @@ def main():
                             "_Suggerimento: guarda l'anteprima del video sorgente qui sotto "
                             "per capire dove posizionare il punto di ancoraggio._"
                         )
+                        if stripe_source_choice == "Nessuna (fallback: sfasamento stesso video)":
+                            st.warning(
+                                "⚠️ Con 'Nessuna' come sorgente, la banda mostra lo STESSO "
+                                "video solo sfasato nel tempo — non un video diverso. "
+                                "L'ancoraggio funziona comunque (fissa un punto spaziale "
+                                "invece di seguire la finestra), ma l'effetto è molto meno "
+                                "evidente perché il contenuto cambia solo nel tempo, non "
+                                "nello spazio. Per vedere davvero un soggetto (es. un volto) "
+                                "'agganciato' alla banda, scegli sopra un video dedicato in "
+                                "'Sorgente per la striscia'."
+                            )
 
                     _loaded_idx = [i for i in range(4) if files[i]]
                     _source_options = ["Nessuna (fallback: sfasamento stesso video)"]
@@ -2622,9 +2633,37 @@ def main():
                             if _stripe_prev_frame is not None:
                                 # Mostra DAVVERO il contenuto del video scelto per la
                                 # striscia (non solo un tint indicativo): resize alla
-                                # dimensione della preview, poi crop della sola finestra.
+                                # dimensione della preview, poi crop.
+                                # Se 'contenuto segue la banda' e' attivo, il crop va
+                                # preso dalle coordinate del PUNTO DI ANCORAGGIO, non
+                                # da quelle della finestra — altrimenti l'anteprima
+                                # ignora del tutto gli slider di ancoraggio e sembra
+                                # che l'ancoraggio non faccia nulla (anche se nel
+                                # render vero funziona) perche' non lo mostra mai.
                                 _sp = np.array(Image.fromarray(_stripe_prev_frame).resize((pw, ph)))
-                                _pf[p0:p1, l0:l1] = _sp[p0:p1, l0:l1]
+                                if stripe_content_follows:
+                                    if stripe_mod_orient == "Orizzontale":
+                                        _chc = int(ph * stripe_content_anchor_pos / 100.0)
+                                        p0c = max(0, min(ph - band_h, _chc - band_h // 2))
+                                        p1c = min(ph, p0c + band_h)
+                                        _cwc = int(pw * stripe_content_anchor_length_pos / 100.0)
+                                        l0c = max(0, min(pw - band_w, _cwc - band_w // 2))
+                                        l1c = min(pw, l0c + band_w)
+                                    else:
+                                        _cwc = int(pw * stripe_content_anchor_pos / 100.0)
+                                        l0c = max(0, min(pw - band_w, _cwc - band_w // 2))
+                                        l1c = min(pw, l0c + band_w)
+                                        _chc = int(ph * stripe_content_anchor_length_pos / 100.0)
+                                        p0c = max(0, min(ph - band_h, _chc - band_h // 2))
+                                        p1c = min(ph, p0c + band_h)
+                                else:
+                                    p0c, p1c, l0c, l1c = p0, p1, l0, l1
+                                _content_crop = _sp[p0c:p1c, l0c:l1c]
+                                if _content_crop.shape[:2] != (p1 - p0, l1 - l0):
+                                    _content_crop = np.array(
+                                        Image.fromarray(_content_crop).resize((l1 - l0, p1 - p0))
+                                    )
+                                _pf[p0:p1, l0:l1] = _content_crop
                             else:
                                 _pf[p0:p1, l0:l1] = (
                                     _pf[p0:p1, l0:l1] * 0.35 + _VIOLET * 0.65

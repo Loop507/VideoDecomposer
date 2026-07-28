@@ -1891,7 +1891,6 @@ def main():
             st.caption("Tutti i video vengono usati in egual misura nel remix.")
             st.markdown("---")
             preview_slot_vd = st.container()
-            preview_slot_vd_2 = st.container()
 
     with c2:
         if app_mode == "Decompose":
@@ -2412,170 +2411,171 @@ def main():
                              "validi del sorgente."
                     )
 
-                stripe_mod_on = st.checkbox(
-                    "🎞️ Banda selettiva (beta)",
-                    value=False,
-                    key=f"stripe_mod_on_{vj_genre}",
-                    help="Una banda della cornice mostra un'altra fonte video "
-                         "(uno degli altri video caricati, oppure uno caricato "
-                         "apposta). Puoi tenerla fissa (Intensità massima banda "
-                         "= 0%, solo Opacità di base) o farla pulsare sugli "
-                         "onset reali del brano. Post-processing indipendente: "
-                         "non tocca generate_dj_remix. Spento = comportamento "
-                         "identico a prima. '(beta)': funziona, ma ha ricevuto "
-                         "meno test delle altre funzioni — se dopo qualche uso "
-                         "va bene, dimmelo e tolgo l'etichetta."
-                )
-                stripe_mod_pct = 18.0
-                stripe_mod_pos = 50.0
-                stripe_mod_orient = "Orizzontale"
-                stripe_mod_offset_s = 2.0
-                stripe_mod_amount = 0.6
-                stripe_base_opacity = 0.15
-                stripe_length_pct = 100.0
-                stripe_length_pos_pct = 50.0
-                stripe_content_follows = False
-                stripe_content_anchor_pos = 50.0
-                stripe_content_anchor_length_pos = 50.0
-                stripe_use_frozen = False
-                stripe_frozen_crop = None
-                stripe_source_choice = "Nessuna (fallback: sfasamento stesso video)"
-                stripe_video_file = None
-                if stripe_mod_on:
-                    col_sm1, col_sm2 = st.columns(2)
-                    with col_sm1:
-                        stripe_mod_pct = st.slider(
-                            "Spessore banda (%)", min_value=4.0, max_value=50.0,
-                            value=18.0, step=1.0, key=f"stripe_mod_pct_{vj_genre}"
-                        )
-                        stripe_mod_pos = st.slider(
-                            "Posizione banda (%)", min_value=0.0, max_value=100.0,
-                            value=50.0, step=1.0, key=f"stripe_mod_pos_{vj_genre}"
-                        )
-                        stripe_length_pct = st.slider(
-                            "Lunghezza banda (%)", min_value=5.0, max_value=100.0,
-                            value=100.0, step=5.0, key=f"stripe_length_pct_{vj_genre}",
-                            help="100% = banda edge-to-edge (comportamento originale). "
-                                 "Valori più bassi accorciano la banda invece di farla "
-                                 "arrivare da un bordo all'altro."
-                        )
-                    with col_sm2:
-                        stripe_mod_orient = st.radio(
-                            "Orientamento", ["Orizzontale", "Verticale"],
-                            key=f"stripe_mod_orient_{vj_genre}", horizontal=True
-                        )
-                        stripe_mod_offset_s = st.slider(
-                            "Sfasamento temporale (sec, solo fallback)", min_value=0.2, max_value=6.0,
-                            value=2.0, step=0.2, key=f"stripe_mod_offset_{vj_genre}"
-                        )
-                        stripe_length_pos_pct = st.slider(
-                            "Posizione lunghezza (%)", min_value=0.0, max_value=100.0,
-                            value=50.0, step=1.0, key=f"stripe_length_pos_{vj_genre}",
-                            help="Dove si centra la banda lungo l'asse lungo, "
-                                 "utile solo se 'Lunghezza banda' è sotto il 100%."
-                        )
-                    col_sm3, col_sm4 = st.columns(2)
-                    with col_sm3:
-                        stripe_mod_amount = st.slider(
-                            "Intensità massima banda (%)", min_value=0, max_value=100,
-                            value=60, step=5, key=f"stripe_mod_amount_{vj_genre}",
-                            help="Picco di opacità raggiunto ad ogni onset. 0% = "
-                                 "nessun pulsare: la banda resta ferma all'Opacità "
-                                 "di base, puramente manuale."
-                        ) / 100.0
-                    with col_sm4:
-                        stripe_base_opacity = st.slider(
-                            "Opacità di base (%)", min_value=0, max_value=100,
-                            value=15, step=5, key=f"stripe_base_opacity_{vj_genre}",
-                            help="Opacità 'a riposo', tra un onset e l'altro. "
-                                 "0% = banda invisibile fuori dai picchi (solo "
-                                 "flash sul beat). Valori più alti = banda "
-                                 "sempre visibile, che si intensifica sul beat."
-                        ) / 100.0
-
-                    # 'Modalita' contenuto' e i due slider 'Punto sorgente' sono
-                    # stati tolti dai controlli manuali: da quando esiste il
-                    # bottone 'Cattura questa inquadratura' (sotto, nell'anteprima)
-                    # non serve piu' tararli a mano — il bottone scrive
-                    # direttamente questi stessi valori in session_state. Qui si
-                    # leggono e basta, con un piccolo stato di sola lettura +
-                    # un bottone per sbloccare.
-                    stripe_content_follows = (
-                        st.session_state.get(f"stripe_content_mode_{vj_genre}", "Video fisso")
-                        == "Il contenuto segue la banda"
+                with st.expander("🎞️ Banda selettiva 1 (beta)", expanded=False):
+                    stripe_mod_on = st.checkbox(
+                        "Attiva banda 1",
+                        value=False,
+                        key=f"stripe_mod_on_{vj_genre}",
+                        help="Una banda della cornice mostra un'altra fonte video "
+                             "(uno degli altri video caricati, oppure uno caricato "
+                             "apposta). Puoi tenerla fissa (Intensità massima banda "
+                             "= 0%, solo Opacità di base) o farla pulsare sugli "
+                             "onset reali del brano. Post-processing indipendente: "
+                             "non tocca generate_dj_remix. Spento = comportamento "
+                             "identico a prima. '(beta)': funziona, ma ha ricevuto "
+                             "meno test delle altre funzioni — se dopo qualche uso "
+                             "va bene, dimmelo e tolgo l'etichetta."
                     )
-                    stripe_content_anchor_pos = st.session_state.get(f"stripe_anchor_pos_{vj_genre}", 50.0)
-                    stripe_content_anchor_length_pos = st.session_state.get(f"stripe_anchor_length_pos_{vj_genre}", 50.0)
-                    if stripe_content_follows:
-                        col_anc1, col_anc2 = st.columns([3, 1])
-                        with col_anc1:
-                            st.caption(
-                                f"📍 Inquadratura ancorata a {int(stripe_content_anchor_pos)}% / "
-                                f"{int(stripe_content_anchor_length_pos)}% (impostata col bottone "
-                                f"'Cattura questa inquadratura' qui sotto — muovi la banda e la "
-                                f"trovi lì per ricatturarla altrove)."
+                    stripe_mod_pct = 18.0
+                    stripe_mod_pos = 50.0
+                    stripe_mod_orient = "Orizzontale"
+                    stripe_mod_offset_s = 2.0
+                    stripe_mod_amount = 0.6
+                    stripe_base_opacity = 0.15
+                    stripe_length_pct = 100.0
+                    stripe_length_pos_pct = 50.0
+                    stripe_content_follows = False
+                    stripe_content_anchor_pos = 50.0
+                    stripe_content_anchor_length_pos = 50.0
+                    stripe_use_frozen = False
+                    stripe_frozen_crop = None
+                    stripe_source_choice = "Nessuna (fallback: sfasamento stesso video)"
+                    stripe_video_file = None
+                    if stripe_mod_on:
+                        col_sm1, col_sm2 = st.columns(2)
+                        with col_sm1:
+                            stripe_mod_pct = st.slider(
+                                "Spessore banda (%)", min_value=4.0, max_value=50.0,
+                                value=18.0, step=1.0, key=f"stripe_mod_pct_{vj_genre}"
                             )
-                        with col_anc2:
-                            if st.button("↩️ Sblocca", key=f"reset_anchor_{vj_genre}",
-                                         help="Torna a 'Video fisso': il contenuto riprende a "
-                                              "seguire la posizione della banda invece che il "
-                                              "punto catturato."):
-                                st.session_state[f"stripe_content_mode_{vj_genre}"] = "Video fisso"
-                                st.rerun()
-                        # Il caso 'Nessuna (fallback)' + ancoraggio ha un effetto molto
-                        # meno evidente (nessun video diverso da cui campionare): si
-                        # legge stripe_source_choice da session_state (non dalla
-                        # variabile locale, che a questo punto del codice ha ancora
-                        # il valore di default — il vero widget arriva piu' sotto)
-                        # per dare l'avviso corretto invece di uno sfasato.
-                        if st.session_state.get(
-                            f"stripe_source_choice_{vj_genre}",
-                            "Nessuna (fallback: sfasamento stesso video)"
-                        ) == "Nessuna (fallback: sfasamento stesso video)":
-                            st.warning(
-                                "⚠️ Con 'Nessuna' come sorgente, la banda mostra lo STESSO "
-                                "video solo sfasato nel tempo — non un video diverso. "
-                                "L'ancoraggio funziona comunque (fissa un punto spaziale "
-                                "invece di seguire la finestra), ma l'effetto è molto meno "
-                                "evidente perché il contenuto cambia solo nel tempo, non "
-                                "nello spazio. Per vedere davvero un soggetto (es. un volto) "
-                                "'agganciato' alla banda, scegli sotto un video dedicato in "
-                                "'Sorgente per la striscia'."
+                            stripe_mod_pos = st.slider(
+                                "Posizione banda (%)", min_value=0.0, max_value=100.0,
+                                value=50.0, step=1.0, key=f"stripe_mod_pos_{vj_genre}"
                             )
+                            stripe_length_pct = st.slider(
+                                "Lunghezza banda (%)", min_value=5.0, max_value=100.0,
+                                value=100.0, step=5.0, key=f"stripe_length_pct_{vj_genre}",
+                                help="100% = banda edge-to-edge (comportamento originale). "
+                                     "Valori più bassi accorciano la banda invece di farla "
+                                     "arrivare da un bordo all'altro."
+                            )
+                        with col_sm2:
+                            stripe_mod_orient = st.radio(
+                                "Orientamento", ["Orizzontale", "Verticale"],
+                                key=f"stripe_mod_orient_{vj_genre}", horizontal=True
+                            )
+                            stripe_mod_offset_s = st.slider(
+                                "Sfasamento temporale (sec, solo fallback)", min_value=0.2, max_value=6.0,
+                                value=2.0, step=0.2, key=f"stripe_mod_offset_{vj_genre}"
+                            )
+                            stripe_length_pos_pct = st.slider(
+                                "Posizione lunghezza (%)", min_value=0.0, max_value=100.0,
+                                value=50.0, step=1.0, key=f"stripe_length_pos_{vj_genre}",
+                                help="Dove si centra la banda lungo l'asse lungo, "
+                                     "utile solo se 'Lunghezza banda' è sotto il 100%."
+                            )
+                        col_sm3, col_sm4 = st.columns(2)
+                        with col_sm3:
+                            stripe_mod_amount = st.slider(
+                                "Intensità massima banda (%)", min_value=0, max_value=100,
+                                value=60, step=5, key=f"stripe_mod_amount_{vj_genre}",
+                                help="Picco di opacità raggiunto ad ogni onset. 0% = "
+                                     "nessun pulsare: la banda resta ferma all'Opacità "
+                                     "di base, puramente manuale."
+                            ) / 100.0
+                        with col_sm4:
+                            stripe_base_opacity = st.slider(
+                                "Opacità di base (%)", min_value=0, max_value=100,
+                                value=15, step=5, key=f"stripe_base_opacity_{vj_genre}",
+                                help="Opacità 'a riposo', tra un onset e l'altro. "
+                                     "0% = banda invisibile fuori dai picchi (solo "
+                                     "flash sul beat). Valori più alti = banda "
+                                     "sempre visibile, che si intensifica sul beat."
+                            ) / 100.0
 
-                    _loaded_idx = [i for i in range(4) if files[i]]
-                    _source_options = ["Nessuna (fallback: sfasamento stesso video)"]
-                    _source_options += [f"Video {i+1} ({files[i].name[:14]})" for i in _loaded_idx]
-                    _source_options += ["Carica video separato"]
-                    # Default: se c'e' almeno un video gia' caricato, si preseleziona
-                    # il primo come sorgente della striscia (indice 1 nella lista,
-                    # subito dopo "Nessuna"), cosi' la funzione e' visibile e attiva
-                    # da subito senza dover cliccare nulla manualmente.
-                    _default_src_idx = 1 if _loaded_idx else 0
-                    _radio_key = f"stripe_source_choice_{vj_genre}"
-                    # Sicurezza: se un video e' stato rimosso/sostituito dopo aver
-                    # gia' scelto "Video N (nomefile)", quella stringa esatta non e'
-                    # piu' tra le opzioni correnti -> st.radio andrebbe in crash.
-                    # Si resetta il valore salvato per tornare al default sicuro.
-                    if st.session_state.get(_radio_key) not in _source_options:
-                        st.session_state.pop(_radio_key, None)
-                    stripe_source_choice = st.radio(
-                        "Sorgente per la striscia", _source_options,
-                        index=_default_src_idx,
-                        key=_radio_key,
-                        help="Scegli quale video mostrare nella banda: uno di "
-                             "quelli già caricati sopra (nessun upload "
-                             "aggiuntivo necessario), uno caricato a parte, "
-                             "oppure 'Nessuna' per il vecchio comportamento "
-                             "(sfasamento temporale della sequenza mixata)."
-                    )
-                    st.caption(f"👉 Striscia userà: **{stripe_source_choice}**")
-                    if stripe_source_choice == "Carica video separato":
-                        stripe_video_file = st.file_uploader(
-                            "Video per la striscia",
-                            type=["mp4", "mov", "avi", "mkv"],
-                            key=f"stripe_video_{vj_genre}"
+                        # 'Modalita' contenuto' e i due slider 'Punto sorgente' sono
+                        # stati tolti dai controlli manuali: da quando esiste il
+                        # bottone 'Cattura questa inquadratura' (sotto, nell'anteprima)
+                        # non serve piu' tararli a mano — il bottone scrive
+                        # direttamente questi stessi valori in session_state. Qui si
+                        # leggono e basta, con un piccolo stato di sola lettura +
+                        # un bottone per sbloccare.
+                        stripe_content_follows = (
+                            st.session_state.get(f"stripe_content_mode_{vj_genre}", "Video fisso")
+                            == "Il contenuto segue la banda"
                         )
+                        stripe_content_anchor_pos = st.session_state.get(f"stripe_anchor_pos_{vj_genre}", 50.0)
+                        stripe_content_anchor_length_pos = st.session_state.get(f"stripe_anchor_length_pos_{vj_genre}", 50.0)
+                        if stripe_content_follows:
+                            col_anc1, col_anc2 = st.columns([3, 1])
+                            with col_anc1:
+                                st.caption(
+                                    f"📍 Inquadratura ancorata a {int(stripe_content_anchor_pos)}% / "
+                                    f"{int(stripe_content_anchor_length_pos)}% (impostata col bottone "
+                                    f"'Cattura questa inquadratura' qui sotto — muovi la banda e la "
+                                    f"trovi lì per ricatturarla altrove)."
+                                )
+                            with col_anc2:
+                                if st.button("↩️ Sblocca", key=f"reset_anchor_{vj_genre}",
+                                             help="Torna a 'Video fisso': il contenuto riprende a "
+                                                  "seguire la posizione della banda invece che il "
+                                                  "punto catturato."):
+                                    st.session_state[f"stripe_content_mode_{vj_genre}"] = "Video fisso"
+                                    st.rerun()
+                            # Il caso 'Nessuna (fallback)' + ancoraggio ha un effetto molto
+                            # meno evidente (nessun video diverso da cui campionare): si
+                            # legge stripe_source_choice da session_state (non dalla
+                            # variabile locale, che a questo punto del codice ha ancora
+                            # il valore di default — il vero widget arriva piu' sotto)
+                            # per dare l'avviso corretto invece di uno sfasato.
+                            if st.session_state.get(
+                                f"stripe_source_choice_{vj_genre}",
+                                "Nessuna (fallback: sfasamento stesso video)"
+                            ) == "Nessuna (fallback: sfasamento stesso video)":
+                                st.warning(
+                                    "⚠️ Con 'Nessuna' come sorgente, la banda mostra lo STESSO "
+                                    "video solo sfasato nel tempo — non un video diverso. "
+                                    "L'ancoraggio funziona comunque (fissa un punto spaziale "
+                                    "invece di seguire la finestra), ma l'effetto è molto meno "
+                                    "evidente perché il contenuto cambia solo nel tempo, non "
+                                    "nello spazio. Per vedere davvero un soggetto (es. un volto) "
+                                    "'agganciato' alla banda, scegli sotto un video dedicato in "
+                                    "'Sorgente per la striscia'."
+                                )
+
+                        _loaded_idx = [i for i in range(4) if files[i]]
+                        _source_options = ["Nessuna (fallback: sfasamento stesso video)"]
+                        _source_options += [f"Video {i+1} ({files[i].name[:14]})" for i in _loaded_idx]
+                        _source_options += ["Carica video separato"]
+                        # Default: se c'e' almeno un video gia' caricato, si preseleziona
+                        # il primo come sorgente della striscia (indice 1 nella lista,
+                        # subito dopo "Nessuna"), cosi' la funzione e' visibile e attiva
+                        # da subito senza dover cliccare nulla manualmente.
+                        _default_src_idx = 1 if _loaded_idx else 0
+                        _radio_key = f"stripe_source_choice_{vj_genre}"
+                        # Sicurezza: se un video e' stato rimosso/sostituito dopo aver
+                        # gia' scelto "Video N (nomefile)", quella stringa esatta non e'
+                        # piu' tra le opzioni correnti -> st.radio andrebbe in crash.
+                        # Si resetta il valore salvato per tornare al default sicuro.
+                        if st.session_state.get(_radio_key) not in _source_options:
+                            st.session_state.pop(_radio_key, None)
+                        stripe_source_choice = st.radio(
+                            "Sorgente per la striscia", _source_options,
+                            index=_default_src_idx,
+                            key=_radio_key,
+                            help="Scegli quale video mostrare nella banda: uno di "
+                                 "quelli già caricati sopra (nessun upload "
+                                 "aggiuntivo necessario), uno caricato a parte, "
+                                 "oppure 'Nessuna' per il vecchio comportamento "
+                                 "(sfasamento temporale della sequenza mixata)."
+                        )
+                        st.caption(f"👉 Striscia userà: **{stripe_source_choice}**")
+                        if stripe_source_choice == "Carica video separato":
+                            stripe_video_file = st.file_uploader(
+                                "Video per la striscia",
+                                type=["mp4", "mov", "avi", "mkv"],
+                                key=f"stripe_video_{vj_genre}"
+                            )
             else:
                 stripe_mod_on = False
                 stripe_mod_pct = 18.0
@@ -2719,11 +2719,11 @@ def main():
                             _cap = ("Frame iniziale — banda = video dedicato caricato"
                                     if _stripe_prev_frame is not None else
                                     "Frame iniziale — banda viola = fallback (nessun video caricato)")
-                        st.image(
-                            _pf,
-                            caption=_cap,
-                            use_container_width=True
-                        )
+                        # NOTA: l'immagine viene mostrata una volta sola, PIU' AVANTI
+                        # (dopo che anche la banda 2 ha disegnato sopra lo stesso
+                        # frame) — cosi' l'utente vede UN'unica anteprima con
+                        # entrambe le bande sovrapposte, invece di due immagini
+                        # separate una sotto l'altra.
                         if stripe_mod_on and _stripe_prev_frame is not None:
                             def _capture_framing_cb(_vj_genre=vj_genre, _pos=stripe_mod_pos, _len_pos=stripe_length_pos_pct):
                                 # on_click gira PRIMA del rerun dello script: a
@@ -2819,172 +2819,172 @@ def main():
                                 )
 
             st.markdown("---")
-            st.markdown("**Banda selettiva 2** — indipendente dalla prima, stessa logica.")
             if MODULATION_LAB_AVAILABLE:
-                stripe_mod_on_2 = st.checkbox(
-                    "🎞️ Banda selettiva 2 (beta)",
-                    value=False,
-                    key=f"stripe_mod_on_2_{vj_genre}",
-                    help="Una banda della cornice mostra un'altra fonte video "
-                         "(uno degli altri video caricati, oppure uno caricato "
-                         "apposta). Puoi tenerla fissa (Intensità massima banda "
-                         "= 0%, solo Opacità di base) o farla pulsare sugli "
-                         "onset reali del brano. Post-processing indipendente: "
-                         "non tocca generate_dj_remix. Spento = comportamento "
-                         "identico a prima. '(beta)': funziona, ma ha ricevuto "
-                         "meno test delle altre funzioni — se dopo qualche uso "
-                         "va bene, dimmelo e tolgo l'etichetta."
-                )
-                stripe_mod_pct_2 = 18.0
-                stripe_mod_pos_2 = 50.0
-                stripe_mod_orient_2 = "Orizzontale"
-                stripe_mod_offset_s_2 = 2.0
-                stripe_mod_amount_2 = 0.6
-                stripe_base_opacity_2 = 0.15
-                stripe_length_pct_2 = 100.0
-                stripe_length_pos_pct_2 = 50.0
-                stripe_content_follows_2 = False
-                stripe_content_anchor_pos_2 = 50.0
-                stripe_content_anchor_length_pos_2 = 50.0
-                stripe_use_frozen_2 = False
-                stripe_frozen_crop_2 = None
-                stripe_source_choice_2 = "Nessuna (fallback: sfasamento stesso video)"
-                stripe_video_file_2 = None
-                if stripe_mod_on_2:
-                    col_sm1_2, col_sm2_2 = st.columns(2)
-                    with col_sm1_2:
-                        stripe_mod_pct_2 = st.slider(
-                            "Spessore banda (%)", min_value=4.0, max_value=50.0,
-                            value=18.0, step=1.0, key=f"stripe_mod_pct_2_{vj_genre}"
-                        )
-                        stripe_mod_pos_2 = st.slider(
-                            "Posizione banda (%)", min_value=0.0, max_value=100.0,
-                            value=50.0, step=1.0, key=f"stripe_mod_pos_2_{vj_genre}"
-                        )
-                        stripe_length_pct_2 = st.slider(
-                            "Lunghezza banda (%)", min_value=5.0, max_value=100.0,
-                            value=100.0, step=5.0, key=f"stripe_length_pct_2_{vj_genre}",
-                            help="100% = banda edge-to-edge (comportamento originale). "
-                                 "Valori più bassi accorciano la banda invece di farla "
-                                 "arrivare da un bordo all'altro."
-                        )
-                    with col_sm2_2:
-                        stripe_mod_orient_2 = st.radio(
-                            "Orientamento", ["Orizzontale", "Verticale"],
-                            key=f"stripe_mod_orient_2_{vj_genre}", horizontal=True
-                        )
-                        stripe_mod_offset_s_2 = st.slider(
-                            "Sfasamento temporale (sec, solo fallback)", min_value=0.2, max_value=6.0,
-                            value=2.0, step=0.2, key=f"stripe_mod_offset_2_{vj_genre}"
-                        )
-                        stripe_length_pos_pct_2 = st.slider(
-                            "Posizione lunghezza (%)", min_value=0.0, max_value=100.0,
-                            value=50.0, step=1.0, key=f"stripe_length_pos_2_{vj_genre}",
-                            help="Dove si centra la banda lungo l'asse lungo, "
-                                 "utile solo se 'Lunghezza banda' è sotto il 100%."
-                        )
-                    col_sm3_2, col_sm4_2 = st.columns(2)
-                    with col_sm3_2:
-                        stripe_mod_amount_2 = st.slider(
-                            "Intensità massima banda (%)", min_value=0, max_value=100,
-                            value=60, step=5, key=f"stripe_mod_amount_2_{vj_genre}",
-                            help="Picco di opacità raggiunto ad ogni onset. 0% = "
-                                 "nessun pulsare: la banda resta ferma all'Opacità "
-                                 "di base, puramente manuale."
-                        ) / 100.0
-                    with col_sm4_2:
-                        stripe_base_opacity_2 = st.slider(
-                            "Opacità di base (%)", min_value=0, max_value=100,
-                            value=15, step=5, key=f"stripe_base_opacity_2_{vj_genre}",
-                            help="Opacità 'a riposo', tra un onset e l'altro. "
-                                 "0% = banda invisibile fuori dai picchi (solo "
-                                 "flash sul beat). Valori più alti = banda "
-                                 "sempre visibile, che si intensifica sul beat."
-                        ) / 100.0
-
-                    # 'Modalita' contenuto' e i due slider 'Punto sorgente' sono
-                    # stati tolti dai controlli manuali: da quando esiste il
-                    # bottone 'Cattura questa inquadratura' (sotto, nell'anteprima)
-                    # non serve piu' tararli a mano — il bottone scrive
-                    # direttamente questi stessi valori in session_state. Qui si
-                    # leggono e basta, con un piccolo stato di sola lettura +
-                    # un bottone per sbloccare.
-                    stripe_content_follows_2 = (
-                        st.session_state.get(f"stripe_content_mode_2_{vj_genre}", "Video fisso")
-                        == "Il contenuto segue la banda"
+                with st.expander("🎞️ Banda selettiva 2 (beta)", expanded=False):
+                    stripe_mod_on_2 = st.checkbox(
+                        "Attiva banda 2",
+                        value=False,
+                        key=f"stripe_mod_on_2_{vj_genre}",
+                        help="Una banda della cornice mostra un'altra fonte video "
+                             "(uno degli altri video caricati, oppure uno caricato "
+                             "apposta). Puoi tenerla fissa (Intensità massima banda "
+                             "= 0%, solo Opacità di base) o farla pulsare sugli "
+                             "onset reali del brano. Post-processing indipendente: "
+                             "non tocca generate_dj_remix. Spento = comportamento "
+                             "identico a prima. '(beta)': funziona, ma ha ricevuto "
+                             "meno test delle altre funzioni — se dopo qualche uso "
+                             "va bene, dimmelo e tolgo l'etichetta."
                     )
-                    stripe_content_anchor_pos_2 = st.session_state.get(f"stripe_anchor_pos_2_{vj_genre}", 50.0)
-                    stripe_content_anchor_length_pos_2 = st.session_state.get(f"stripe_anchor_length_pos_2_{vj_genre}", 50.0)
-                    if stripe_content_follows_2:
-                        col_anc1_2, col_anc2_2 = st.columns([3, 1])
-                        with col_anc1_2:
-                            st.caption(
-                                f"📍 Inquadratura ancorata a {int(stripe_content_anchor_pos_2)}% / "
-                                f"{int(stripe_content_anchor_length_pos_2)}% (impostata col bottone "
-                                f"'Cattura questa inquadratura' qui sotto — muovi la banda e la "
-                                f"trovi lì per ricatturarla altrove)."
+                    stripe_mod_pct_2 = 18.0
+                    stripe_mod_pos_2 = 50.0
+                    stripe_mod_orient_2 = "Orizzontale"
+                    stripe_mod_offset_s_2 = 2.0
+                    stripe_mod_amount_2 = 0.6
+                    stripe_base_opacity_2 = 0.15
+                    stripe_length_pct_2 = 100.0
+                    stripe_length_pos_pct_2 = 50.0
+                    stripe_content_follows_2 = False
+                    stripe_content_anchor_pos_2 = 50.0
+                    stripe_content_anchor_length_pos_2 = 50.0
+                    stripe_use_frozen_2 = False
+                    stripe_frozen_crop_2 = None
+                    stripe_source_choice_2 = "Nessuna (fallback: sfasamento stesso video)"
+                    stripe_video_file_2 = None
+                    if stripe_mod_on_2:
+                        col_sm1_2, col_sm2_2 = st.columns(2)
+                        with col_sm1_2:
+                            stripe_mod_pct_2 = st.slider(
+                                "Spessore banda (%)", min_value=4.0, max_value=50.0,
+                                value=18.0, step=1.0, key=f"stripe_mod_pct_2_{vj_genre}"
                             )
-                        with col_anc2_2:
-                            if st.button("↩️ Sblocca", key=f"reset_anchor_2_{vj_genre}",
-                                         help="Torna a 'Video fisso': il contenuto riprende a "
-                                              "seguire la posizione della banda invece che il "
-                                              "punto catturato."):
-                                st.session_state[f"stripe_content_mode_2_{vj_genre}"] = "Video fisso"
-                                st.rerun()
-                        # Il caso 'Nessuna (fallback)' + ancoraggio ha un effetto molto
-                        # meno evidente (nessun video diverso da cui campionare): si
-                        # legge stripe_source_choice_2 da session_state (non dalla
-                        # variabile locale, che a questo punto del codice ha ancora
-                        # il valore di default — il vero widget arriva piu' sotto)
-                        # per dare l'avviso corretto invece di uno sfasato.
-                        if st.session_state.get(
-                            f"stripe_source_choice_2_{vj_genre}",
-                            "Nessuna (fallback: sfasamento stesso video)"
-                        ) == "Nessuna (fallback: sfasamento stesso video)":
-                            st.warning(
-                                "⚠️ Con 'Nessuna' come sorgente, la banda mostra lo STESSO "
-                                "video solo sfasato nel tempo — non un video diverso. "
-                                "L'ancoraggio funziona comunque (fissa un punto spaziale "
-                                "invece di seguire la finestra), ma l'effetto è molto meno "
-                                "evidente perché il contenuto cambia solo nel tempo, non "
-                                "nello spazio. Per vedere davvero un soggetto (es. un volto) "
-                                "'agganciato' alla banda, scegli sotto un video dedicato in "
-                                "'Sorgente per la striscia'."
+                            stripe_mod_pos_2 = st.slider(
+                                "Posizione banda (%)", min_value=0.0, max_value=100.0,
+                                value=50.0, step=1.0, key=f"stripe_mod_pos_2_{vj_genre}"
                             )
+                            stripe_length_pct_2 = st.slider(
+                                "Lunghezza banda (%)", min_value=5.0, max_value=100.0,
+                                value=100.0, step=5.0, key=f"stripe_length_pct_2_{vj_genre}",
+                                help="100% = banda edge-to-edge (comportamento originale). "
+                                     "Valori più bassi accorciano la banda invece di farla "
+                                     "arrivare da un bordo all'altro."
+                            )
+                        with col_sm2_2:
+                            stripe_mod_orient_2 = st.radio(
+                                "Orientamento", ["Orizzontale", "Verticale"],
+                                key=f"stripe_mod_orient_2_{vj_genre}", horizontal=True
+                            )
+                            stripe_mod_offset_s_2 = st.slider(
+                                "Sfasamento temporale (sec, solo fallback)", min_value=0.2, max_value=6.0,
+                                value=2.0, step=0.2, key=f"stripe_mod_offset_2_{vj_genre}"
+                            )
+                            stripe_length_pos_pct_2 = st.slider(
+                                "Posizione lunghezza (%)", min_value=0.0, max_value=100.0,
+                                value=50.0, step=1.0, key=f"stripe_length_pos_2_{vj_genre}",
+                                help="Dove si centra la banda lungo l'asse lungo, "
+                                     "utile solo se 'Lunghezza banda' è sotto il 100%."
+                            )
+                        col_sm3_2, col_sm4_2 = st.columns(2)
+                        with col_sm3_2:
+                            stripe_mod_amount_2 = st.slider(
+                                "Intensità massima banda (%)", min_value=0, max_value=100,
+                                value=60, step=5, key=f"stripe_mod_amount_2_{vj_genre}",
+                                help="Picco di opacità raggiunto ad ogni onset. 0% = "
+                                     "nessun pulsare: la banda resta ferma all'Opacità "
+                                     "di base, puramente manuale."
+                            ) / 100.0
+                        with col_sm4_2:
+                            stripe_base_opacity_2 = st.slider(
+                                "Opacità di base (%)", min_value=0, max_value=100,
+                                value=15, step=5, key=f"stripe_base_opacity_2_{vj_genre}",
+                                help="Opacità 'a riposo', tra un onset e l'altro. "
+                                     "0% = banda invisibile fuori dai picchi (solo "
+                                     "flash sul beat). Valori più alti = banda "
+                                     "sempre visibile, che si intensifica sul beat."
+                            ) / 100.0
 
-                    _loaded_idx_2 = [i for i in range(4) if files[i]]
-                    _source_options_2 = ["Nessuna (fallback: sfasamento stesso video)"]
-                    _source_options_2 += [f"Video {i+1} ({files[i].name[:14]})" for i in _loaded_idx_2]
-                    _source_options_2 += ["Carica video separato"]
-                    # Default: se c'e' almeno un video gia' caricato, si preseleziona
-                    # il primo come sorgente della striscia (indice 1 nella lista,
-                    # subito dopo "Nessuna"), cosi' la funzione e' visibile e attiva
-                    # da subito senza dover cliccare nulla manualmente.
-                    _default_src_idx_2 = 1 if _loaded_idx_2 else 0
-                    _radio_key_2 = f"stripe_source_choice_2_{vj_genre}"
-                    # Sicurezza: se un video e' stato rimosso/sostituito dopo aver
-                    # gia' scelto "Video N (nomefile)", quella stringa esatta non e'
-                    # piu' tra le opzioni correnti -> st.radio andrebbe in crash.
-                    # Si resetta il valore salvato per tornare al default sicuro.
-                    if st.session_state.get(_radio_key_2) not in _source_options_2:
-                        st.session_state.pop(_radio_key_2, None)
-                    stripe_source_choice_2 = st.radio(
-                        "Sorgente per la striscia", _source_options_2,
-                        index=_default_src_idx_2,
-                        key=_radio_key_2,
-                        help="Scegli quale video mostrare nella banda: uno di "
-                             "quelli già caricati sopra (nessun upload "
-                             "aggiuntivo necessario), uno caricato a parte, "
-                             "oppure 'Nessuna' per il vecchio comportamento "
-                             "(sfasamento temporale della sequenza mixata)."
-                    )
-                    st.caption(f"👉 Striscia userà: **{stripe_source_choice_2}**")
-                    if stripe_source_choice_2 == "Carica video separato":
-                        stripe_video_file_2 = st.file_uploader(
-                            "Video per la striscia",
-                            type=["mp4", "mov", "avi", "mkv"],
-                            key=f"stripe_video_2_{vj_genre}"
+                        # 'Modalita' contenuto' e i due slider 'Punto sorgente' sono
+                        # stati tolti dai controlli manuali: da quando esiste il
+                        # bottone 'Cattura questa inquadratura' (sotto, nell'anteprima)
+                        # non serve piu' tararli a mano — il bottone scrive
+                        # direttamente questi stessi valori in session_state. Qui si
+                        # leggono e basta, con un piccolo stato di sola lettura +
+                        # un bottone per sbloccare.
+                        stripe_content_follows_2 = (
+                            st.session_state.get(f"stripe_content_mode_2_{vj_genre}", "Video fisso")
+                            == "Il contenuto segue la banda"
                         )
+                        stripe_content_anchor_pos_2 = st.session_state.get(f"stripe_anchor_pos_2_{vj_genre}", 50.0)
+                        stripe_content_anchor_length_pos_2 = st.session_state.get(f"stripe_anchor_length_pos_2_{vj_genre}", 50.0)
+                        if stripe_content_follows_2:
+                            col_anc1_2, col_anc2_2 = st.columns([3, 1])
+                            with col_anc1_2:
+                                st.caption(
+                                    f"📍 Inquadratura ancorata a {int(stripe_content_anchor_pos_2)}% / "
+                                    f"{int(stripe_content_anchor_length_pos_2)}% (impostata col bottone "
+                                    f"'Cattura questa inquadratura' qui sotto — muovi la banda e la "
+                                    f"trovi lì per ricatturarla altrove)."
+                                )
+                            with col_anc2_2:
+                                if st.button("↩️ Sblocca", key=f"reset_anchor_2_{vj_genre}",
+                                             help="Torna a 'Video fisso': il contenuto riprende a "
+                                                  "seguire la posizione della banda invece che il "
+                                                  "punto catturato."):
+                                    st.session_state[f"stripe_content_mode_2_{vj_genre}"] = "Video fisso"
+                                    st.rerun()
+                            # Il caso 'Nessuna (fallback)' + ancoraggio ha un effetto molto
+                            # meno evidente (nessun video diverso da cui campionare): si
+                            # legge stripe_source_choice_2 da session_state (non dalla
+                            # variabile locale, che a questo punto del codice ha ancora
+                            # il valore di default — il vero widget arriva piu' sotto)
+                            # per dare l'avviso corretto invece di uno sfasato.
+                            if st.session_state.get(
+                                f"stripe_source_choice_2_{vj_genre}",
+                                "Nessuna (fallback: sfasamento stesso video)"
+                            ) == "Nessuna (fallback: sfasamento stesso video)":
+                                st.warning(
+                                    "⚠️ Con 'Nessuna' come sorgente, la banda mostra lo STESSO "
+                                    "video solo sfasato nel tempo — non un video diverso. "
+                                    "L'ancoraggio funziona comunque (fissa un punto spaziale "
+                                    "invece di seguire la finestra), ma l'effetto è molto meno "
+                                    "evidente perché il contenuto cambia solo nel tempo, non "
+                                    "nello spazio. Per vedere davvero un soggetto (es. un volto) "
+                                    "'agganciato' alla banda, scegli sotto un video dedicato in "
+                                    "'Sorgente per la striscia'."
+                                )
+
+                        _loaded_idx_2 = [i for i in range(4) if files[i]]
+                        _source_options_2 = ["Nessuna (fallback: sfasamento stesso video)"]
+                        _source_options_2 += [f"Video {i+1} ({files[i].name[:14]})" for i in _loaded_idx_2]
+                        _source_options_2 += ["Carica video separato"]
+                        # Default: se c'e' almeno un video gia' caricato, si preseleziona
+                        # il primo come sorgente della striscia (indice 1 nella lista,
+                        # subito dopo "Nessuna"), cosi' la funzione e' visibile e attiva
+                        # da subito senza dover cliccare nulla manualmente.
+                        _default_src_idx_2 = 1 if _loaded_idx_2 else 0
+                        _radio_key_2 = f"stripe_source_choice_2_{vj_genre}"
+                        # Sicurezza: se un video e' stato rimosso/sostituito dopo aver
+                        # gia' scelto "Video N (nomefile)", quella stringa esatta non e'
+                        # piu' tra le opzioni correnti -> st.radio andrebbe in crash.
+                        # Si resetta il valore salvato per tornare al default sicuro.
+                        if st.session_state.get(_radio_key_2) not in _source_options_2:
+                            st.session_state.pop(_radio_key_2, None)
+                        stripe_source_choice_2 = st.radio(
+                            "Sorgente per la striscia", _source_options_2,
+                            index=_default_src_idx_2,
+                            key=_radio_key_2,
+                            help="Scegli quale video mostrare nella banda: uno di "
+                                 "quelli già caricati sopra (nessun upload "
+                                 "aggiuntivo necessario), uno caricato a parte, "
+                                 "oppure 'Nessuna' per il vecchio comportamento "
+                                 "(sfasamento temporale della sequenza mixata)."
+                        )
+                        st.caption(f"👉 Striscia userà: **{stripe_source_choice_2}**")
+                        if stripe_source_choice_2 == "Carica video separato":
+                            stripe_video_file_2 = st.file_uploader(
+                                "Video per la striscia",
+                                type=["mp4", "mov", "avi", "mkv"],
+                                key=f"stripe_video_2_{vj_genre}"
+                            )
             else:
                 stripe_mod_on_2 = False
                 stripe_mod_pct_2 = 18.0
@@ -3003,229 +3003,226 @@ def main():
                     "il resto dell'app funziona normalmente)._"
                 )
 
-            with preview_slot_vd_2:
-                st.subheader("Anteprima")
-                _prev_idx_2 = next((i for i in range(4) if files[i]), None)
-                if _prev_idx_2 is None:
-                    st.caption("Carica almeno un video per vedere l'anteprima.")
+            with preview_slot_vd:
+                # Riusa lo STESSO frame gia' preparato (ed eventualmente gia'
+                # modificato dalla banda 1) sopra: cosi' l'anteprima finale
+                # mostra ENTRAMBE le bande sovrapposte in UN'unica immagine,
+                # invece di due anteprime separate una sotto l'altra.
+                if _prev_idx is None or _prev_frame is None:
+                    pass  # gia' segnalato dal blocco della banda 1 qui sopra
                 else:
-                    _prev_cache_key_2 = f"{files[_prev_idx_2].name}_{files[_prev_idx_2].size}"
-                    if st.session_state.get("_vd_preview_key") != _prev_cache_key_2:
-                        st.session_state["_vd_preview_frame"] = get_preview_frame_from_upload(files[_prev_idx_2])
-                        st.session_state["_vd_preview_key"] = _prev_cache_key_2
-                    _prev_frame_2 = st.session_state.get("_vd_preview_frame")
-                    if _prev_frame_2 is None:
-                        st.caption("Impossibile leggere un frame di anteprima da questo video.")
-                    else:
-                        _pf_2 = _prev_frame_2.copy()
-                        ph_2, pw_2 = _pf_2.shape[:2]
-                        _stripe_prev_frame_2 = None
-                        if stripe_mod_on_2 and stripe_source_choice_2 != "Nessuna (fallback: sfasamento stesso video)":
-                            _stripe_prev_source_2 = None
-                            if stripe_source_choice_2 == "Carica video separato":
-                                _stripe_prev_source_2 = stripe_video_file_2
-                            else:
-                                for _si_2 in range(4):
-                                    if stripe_source_choice_2.startswith(f"Video {_si_2+1} ") and files[_si_2]:
-                                        _stripe_prev_source_2 = files[_si_2]
-                                        break
-                            if _stripe_prev_source_2 is not None:
-                                _sprev_cache_key_2 = f"{_stripe_prev_source_2.name}_{_stripe_prev_source_2.size}"
-                                if st.session_state.get("_vd_stripe_preview_key_2") != _sprev_cache_key_2:
-                                    st.session_state["_vd_stripe_preview_frame_2"] = get_preview_frame_from_upload(
-                                        _stripe_prev_source_2, max_w=pw_2
-                                    )
-                                    st.session_state["_vd_stripe_preview_key_2"] = _sprev_cache_key_2
-                                _stripe_prev_frame_2 = st.session_state.get("_vd_stripe_preview_frame_2")
-                                if _stripe_prev_frame_2 is None:
-                                    st.warning(
-                                        "⚠️ La sorgente scelta per la striscia non è leggibile "
-                                        "(formato non supportato o file corrotto): verrà usato "
-                                        "il fallback (stesso video sfasato nel tempo)."
-                                    )
-                        if stripe_mod_on_2:
-                            _VIOLET_2 = np.array([120, 80, 220])
-                            if stripe_mod_orient_2 == "Orizzontale":
-                                band_h_2 = max(1, int(ph_2 * stripe_mod_pct_2 / 100.0))
-                                center_h_2 = int(ph_2 * stripe_mod_pos_2 / 100.0)
-                                p0_2 = max(0, min(ph_2 - band_h_2, center_h_2 - band_h_2 // 2))
-                                p1_2 = min(ph_2, p0_2 + band_h_2)
-                                band_w_2 = max(1, int(pw_2 * stripe_length_pct_2 / 100.0))
-                                center_w_2 = int(pw_2 * stripe_length_pos_pct_2 / 100.0)
-                                l0_2 = max(0, min(pw_2 - band_w_2, center_w_2 - band_w_2 // 2))
-                                l1_2 = min(pw_2, l0_2 + band_w_2)
-                            else:
-                                band_w_2 = max(1, int(pw_2 * stripe_mod_pct_2 / 100.0))
-                                center_w_2 = int(pw_2 * stripe_mod_pos_2 / 100.0)
-                                l0_2 = max(0, min(pw_2 - band_w_2, center_w_2 - band_w_2 // 2))
-                                l1_2 = min(pw_2, l0_2 + band_w_2)
-                                band_h_2 = max(1, int(ph_2 * stripe_length_pct_2 / 100.0))
-                                center_h_2 = int(ph_2 * stripe_length_pos_pct_2 / 100.0)
-                                p0_2 = max(0, min(ph_2 - band_h_2, center_h_2 - band_h_2 // 2))
-                                p1_2 = min(ph_2, p0_2 + band_h_2)
+                    _pf_2 = _pf
+                    ph_2, pw_2 = ph, pw
+                    _stripe_prev_frame_2 = None
+                    if stripe_mod_on_2 and stripe_source_choice_2 != "Nessuna (fallback: sfasamento stesso video)":
+                        _stripe_prev_source_2 = None
+                        if stripe_source_choice_2 == "Carica video separato":
+                            _stripe_prev_source_2 = stripe_video_file_2
+                        else:
+                            for _si_2 in range(4):
+                                if stripe_source_choice_2.startswith(f"Video {_si_2+1} ") and files[_si_2]:
+                                    _stripe_prev_source_2 = files[_si_2]
+                                    break
+                        if _stripe_prev_source_2 is not None:
+                            _sprev_cache_key_2 = f"{_stripe_prev_source_2.name}_{_stripe_prev_source_2.size}"
+                            if st.session_state.get("_vd_stripe_preview_key_2") != _sprev_cache_key_2:
+                                st.session_state["_vd_stripe_preview_frame_2"] = get_preview_frame_from_upload(
+                                    _stripe_prev_source_2, max_w=pw_2
+                                )
+                                st.session_state["_vd_stripe_preview_key_2"] = _sprev_cache_key_2
+                            _stripe_prev_frame_2 = st.session_state.get("_vd_stripe_preview_frame_2")
+                            if _stripe_prev_frame_2 is None:
+                                st.warning(
+                                    "⚠️ La sorgente scelta per la striscia non è leggibile "
+                                    "(formato non supportato o file corrotto): verrà usato "
+                                    "il fallback (stesso video sfasato nel tempo)."
+                                )
+                    if stripe_mod_on_2:
+                        _VIOLET_2 = np.array([120, 80, 220])
+                        if stripe_mod_orient_2 == "Orizzontale":
+                            band_h_2 = max(1, int(ph_2 * stripe_mod_pct_2 / 100.0))
+                            center_h_2 = int(ph_2 * stripe_mod_pos_2 / 100.0)
+                            p0_2 = max(0, min(ph_2 - band_h_2, center_h_2 - band_h_2 // 2))
+                            p1_2 = min(ph_2, p0_2 + band_h_2)
+                            band_w_2 = max(1, int(pw_2 * stripe_length_pct_2 / 100.0))
+                            center_w_2 = int(pw_2 * stripe_length_pos_pct_2 / 100.0)
+                            l0_2 = max(0, min(pw_2 - band_w_2, center_w_2 - band_w_2 // 2))
+                            l1_2 = min(pw_2, l0_2 + band_w_2)
+                        else:
+                            band_w_2 = max(1, int(pw_2 * stripe_mod_pct_2 / 100.0))
+                            center_w_2 = int(pw_2 * stripe_mod_pos_2 / 100.0)
+                            l0_2 = max(0, min(pw_2 - band_w_2, center_w_2 - band_w_2 // 2))
+                            l1_2 = min(pw_2, l0_2 + band_w_2)
+                            band_h_2 = max(1, int(ph_2 * stripe_length_pct_2 / 100.0))
+                            center_h_2 = int(ph_2 * stripe_length_pos_pct_2 / 100.0)
+                            p0_2 = max(0, min(ph_2 - band_h_2, center_h_2 - band_h_2 // 2))
+                            p1_2 = min(ph_2, p0_2 + band_h_2)
 
-                            if _stripe_prev_frame_2 is not None:
-                                # Mostra DAVVERO il contenuto del video scelto per la
-                                # striscia (non solo un tint indicativo): resize alla
-                                # dimensione della preview, poi crop.
-                                # Se 'contenuto segue la banda' e' attivo, il crop va
-                                # preso dalle coordinate del PUNTO DI ANCORAGGIO, non
-                                # da quelle della finestra — altrimenti l'anteprima
-                                # ignora del tutto gli slider di ancoraggio e sembra
-                                # che l'ancoraggio non faccia nulla (anche se nel
-                                # render vero funziona) perche' non lo mostra mai.
-                                # Il checkbox 'usa ritaglio catturato' vive PIU' AVANTI
-                                # nel codice (sotto l'immagine), ma il suo valore va letto
-                                # gia' qui da session_state per riflettere lo stato
-                                # 'congelato' nella STESSA passata, non solo al rerun
-                                # successivo.
-                                _frozen_now_2 = st.session_state.get(f"_frozen_stripe_crop_2_{vj_genre}")
-                                _use_frozen_now_2 = st.session_state.get(f"use_frozen_stripe_2_{vj_genre}", True)
-                                if _frozen_now_2 is not None and _use_frozen_now_2:
+                        if _stripe_prev_frame_2 is not None:
+                            # Mostra DAVVERO il contenuto del video scelto per la
+                            # striscia (non solo un tint indicativo): resize alla
+                            # dimensione della preview, poi crop.
+                            # Se 'contenuto segue la banda' e' attivo, il crop va
+                            # preso dalle coordinate del PUNTO DI ANCORAGGIO, non
+                            # da quelle della finestra — altrimenti l'anteprima
+                            # ignora del tutto gli slider di ancoraggio e sembra
+                            # che l'ancoraggio non faccia nulla (anche se nel
+                            # render vero funziona) perche' non lo mostra mai.
+                            # Il checkbox 'usa ritaglio catturato' vive PIU' AVANTI
+                            # nel codice (sotto l'immagine), ma il suo valore va letto
+                            # gia' qui da session_state per riflettere lo stato
+                            # 'congelato' nella STESSA passata, non solo al rerun
+                            # successivo.
+                            _frozen_now_2 = st.session_state.get(f"_frozen_stripe_crop_2_{vj_genre}")
+                            _use_frozen_now_2 = st.session_state.get(f"use_frozen_stripe_2_{vj_genre}", True)
+                            if _frozen_now_2 is not None and _use_frozen_now_2:
+                                _content_crop_2 = np.array(
+                                    Image.fromarray(_frozen_now_2).resize((l1_2 - l0_2, p1_2 - p0_2))
+                                )
+                            else:
+                                _sp_2 = np.array(Image.fromarray(_stripe_prev_frame_2).resize((pw_2, ph_2)))
+                                if stripe_content_follows_2:
+                                    if stripe_mod_orient_2 == "Orizzontale":
+                                        _chc_2 = int(ph_2 * stripe_content_anchor_pos_2 / 100.0)
+                                        p0c_2 = max(0, min(ph_2 - band_h_2, _chc_2 - band_h_2 // 2))
+                                        p1c_2 = min(ph_2, p0c_2 + band_h_2)
+                                        _cwc_2 = int(pw_2 * stripe_content_anchor_length_pos_2 / 100.0)
+                                        l0c_2 = max(0, min(pw_2 - band_w_2, _cwc_2 - band_w_2 // 2))
+                                        l1c_2 = min(pw_2, l0c_2 + band_w_2)
+                                    else:
+                                        _cwc_2 = int(pw_2 * stripe_content_anchor_pos_2 / 100.0)
+                                        l0c_2 = max(0, min(pw_2 - band_w_2, _cwc_2 - band_w_2 // 2))
+                                        l1c_2 = min(pw_2, l0c_2 + band_w_2)
+                                        _chc_2 = int(ph_2 * stripe_content_anchor_length_pos_2 / 100.0)
+                                        p0c_2 = max(0, min(ph_2 - band_h_2, _chc_2 - band_h_2 // 2))
+                                        p1c_2 = min(ph_2, p0c_2 + band_h_2)
+                                else:
+                                    p0c_2, p1c_2, l0c_2, l1c_2 = p0_2, p1_2, l0_2, l1_2
+                                _content_crop_2 = _sp_2[p0c_2:p1c_2, l0c_2:l1c_2]
+                                if _content_crop_2.shape[:2] != (p1_2 - p0_2, l1_2 - l0_2):
                                     _content_crop_2 = np.array(
-                                        Image.fromarray(_frozen_now_2).resize((l1_2 - l0_2, p1_2 - p0_2))
+                                        Image.fromarray(_content_crop_2).resize((l1_2 - l0_2, p1_2 - p0_2))
+                                    )
+                            _pf_2[p0_2:p1_2, l0_2:l1_2] = _content_crop_2
+                        else:
+                            _pf_2[p0_2:p1_2, l0_2:l1_2] = (
+                                _pf_2[p0_2:p1_2, l0_2:l1_2] * 0.35 + _VIOLET_2 * 0.65
+                            ).astype(np.uint8)
+                        # bordo violetto scuro attorno alla finestra, su tutti i lati
+                        if p0_2 > 1:
+                            _pf_2[max(0, p0_2 - 2):p0_2, l0_2:l1_2] = [80, 40, 200]
+                        if p1_2 < ph_2:
+                            _pf_2[p1_2:min(ph_2, p1_2 + 2), l0_2:l1_2] = [80, 40, 200]
+                        if l0_2 > 1:
+                            _pf_2[p0_2:p1_2, max(0, l0_2 - 2):l0_2] = [80, 40, 200]
+                        if l1_2 < pw_2:
+                            _pf_2[p0_2:p1_2, l1_2:min(pw_2, l1_2 + 2)] = [80, 40, 200]
+                    _cap_2 = "Frame iniziale"
+                    _active_bands = []
+                    if stripe_mod_on:
+                        _active_bands.append("banda 1" + (" = video dedicato" if _stripe_prev_frame is not None else " = fallback"))
+                    if stripe_mod_on_2:
+                        _active_bands.append("banda 2" + (" = video dedicato" if _stripe_prev_frame_2 is not None else " = fallback"))
+                    if _active_bands:
+                        _cap_2 = "Frame iniziale — " + ", ".join(_active_bands)
+                    st.image(
+                        _pf_2,
+                        caption=_cap_2,
+                        use_container_width=True
+                    )
+                    if stripe_mod_on_2 and _stripe_prev_frame_2 is not None:
+                        def _capture_framing_cb_2(_vj_genre=vj_genre, _pos=stripe_mod_pos_2, _len_pos=stripe_length_pos_pct_2):
+                            # on_click gira PRIMA del rerun dello script: a
+                            # questo punto il radio/slider sotto non sono
+                            # ancora stati ridisegnati in QUESTO nuovo run,
+                            # quindi impostare session_state qui e' sicuro
+                            # (farlo dentro il corpo dell'if st.button, DOPO
+                            # che quei widget erano gia' stati disegnati in
+                            # questo stesso passaggio, darebbe invece
+                            # 'cannot be modified after widget has been
+                            # instantiated').
+                            st.session_state[f"stripe_content_mode_2_{_vj_genre}"] = "Il contenuto segue la banda"
+                            st.session_state[f"stripe_anchor_pos_2_{_vj_genre}"] = _pos
+                            st.session_state[f"stripe_anchor_length_pos_2_{_vj_genre}"] = _len_pos
+                        st.button(
+                            "🎥 Cattura questa inquadratura come punto di ancoraggio",
+                            key=f"capture_framing_btn_2_{vj_genre}",
+                            on_click=_capture_framing_cb_2,
+                            help="Diverso dalla cattura immagine sotto: qui NON si "
+                                 "congela un fotogramma, si blocca solo la ZONA (la "
+                                 "porzione di spazio) che la banda sta mostrando ORA "
+                                 "in anteprima — il contenuto continua a essere video "
+                                 "vivo, in movimento, ma sempre da quella stessa zona "
+                                 "del video sorgente, ovunque sposti poi la banda con "
+                                 "'Posizione banda'. Usa gli slider di posizione sopra "
+                                 "per inquadrare il soggetto (es. un occhio) qui in "
+                                 "anteprima, poi premi questo bottone invece di tarare "
+                                 "a mano gli slider 'Punto sorgente'."
+                        )
+                    if stripe_mod_on_2 and _stripe_prev_frame_2 is not None:
+                        col_cap1_2, col_cap2_2 = st.columns([2, 1])
+                        with col_cap1_2:
+                            if st.button(
+                                "📸 Cattura questo ritaglio come immagine fissa",
+                                key=f"capture_stripe_btn_2_{vj_genre}",
+                                help="Congela il contenuto mostrato ora nella banda "
+                                     "(rilettura ad alta risoluzione dal video sorgente, "
+                                     "non dall'anteprima ridotta) come immagine statica. "
+                                     "Dopo la cattura puoi spostarla liberamente con "
+                                     "'Posizione banda' senza che cambi più nel tempo."
+                            ):
+                                _hq_frame_2 = get_preview_frame_from_upload(_stripe_prev_source_2, max_w=1920)
+                                if _hq_frame_2 is None:
+                                    st.warning(
+                                        "⚠️ Non sono riuscito a rileggere il video ad alta "
+                                        "risoluzione per la cattura."
                                     )
                                 else:
-                                    _sp_2 = np.array(Image.fromarray(_stripe_prev_frame_2).resize((pw_2, ph_2)))
-                                    if stripe_content_follows_2:
-                                        if stripe_mod_orient_2 == "Orizzontale":
-                                            _chc_2 = int(ph_2 * stripe_content_anchor_pos_2 / 100.0)
-                                            p0c_2 = max(0, min(ph_2 - band_h_2, _chc_2 - band_h_2 // 2))
-                                            p1c_2 = min(ph_2, p0c_2 + band_h_2)
-                                            _cwc_2 = int(pw_2 * stripe_content_anchor_length_pos_2 / 100.0)
-                                            l0c_2 = max(0, min(pw_2 - band_w_2, _cwc_2 - band_w_2 // 2))
-                                            l1c_2 = min(pw_2, l0c_2 + band_w_2)
-                                        else:
-                                            _cwc_2 = int(pw_2 * stripe_content_anchor_pos_2 / 100.0)
-                                            l0c_2 = max(0, min(pw_2 - band_w_2, _cwc_2 - band_w_2 // 2))
-                                            l1c_2 = min(pw_2, l0c_2 + band_w_2)
-                                            _chc_2 = int(ph_2 * stripe_content_anchor_length_pos_2 / 100.0)
-                                            p0c_2 = max(0, min(ph_2 - band_h_2, _chc_2 - band_h_2 // 2))
-                                            p1c_2 = min(ph_2, p0c_2 + band_h_2)
+                                    _hh_2, _hw_2 = _hq_frame_2.shape[:2]
+                                    _hanchor_pos_2 = stripe_content_anchor_pos_2 if stripe_content_follows_2 else stripe_mod_pos_2
+                                    _hanchor_len_2 = stripe_content_anchor_length_pos_2 if stripe_content_follows_2 else stripe_length_pos_pct_2
+                                    if stripe_mod_orient_2 == "Orizzontale":
+                                        _hband_h_2 = max(1, int(_hh_2 * stripe_mod_pct_2 / 100.0))
+                                        _hband_w_2 = max(1, int(_hw_2 * stripe_length_pct_2 / 100.0))
+                                        _hchc_2 = int(_hh_2 * _hanchor_pos_2 / 100.0)
+                                        _hp0_2 = max(0, min(_hh_2 - _hband_h_2, _hchc_2 - _hband_h_2 // 2))
+                                        _hp1_2 = min(_hh_2, _hp0_2 + _hband_h_2)
+                                        _hcwc_2 = int(_hw_2 * _hanchor_len_2 / 100.0)
+                                        _hl0_2 = max(0, min(_hw_2 - _hband_w_2, _hcwc_2 - _hband_w_2 // 2))
+                                        _hl1_2 = min(_hw_2, _hl0_2 + _hband_w_2)
                                     else:
-                                        p0c_2, p1c_2, l0c_2, l1c_2 = p0_2, p1_2, l0_2, l1_2
-                                    _content_crop_2 = _sp_2[p0c_2:p1c_2, l0c_2:l1c_2]
-                                    if _content_crop_2.shape[:2] != (p1_2 - p0_2, l1_2 - l0_2):
-                                        _content_crop_2 = np.array(
-                                            Image.fromarray(_content_crop_2).resize((l1_2 - l0_2, p1_2 - p0_2))
-                                        )
-                                _pf_2[p0_2:p1_2, l0_2:l1_2] = _content_crop_2
-                            else:
-                                _pf_2[p0_2:p1_2, l0_2:l1_2] = (
-                                    _pf_2[p0_2:p1_2, l0_2:l1_2] * 0.35 + _VIOLET_2 * 0.65
-                                ).astype(np.uint8)
-                            # bordo violetto scuro attorno alla finestra, su tutti i lati
-                            if p0_2 > 1:
-                                _pf_2[max(0, p0_2 - 2):p0_2, l0_2:l1_2] = [80, 40, 200]
-                            if p1_2 < ph_2:
-                                _pf_2[p1_2:min(ph_2, p1_2 + 2), l0_2:l1_2] = [80, 40, 200]
-                            if l0_2 > 1:
-                                _pf_2[p0_2:p1_2, max(0, l0_2 - 2):l0_2] = [80, 40, 200]
-                            if l1_2 < pw_2:
-                                _pf_2[p0_2:p1_2, l1_2:min(pw_2, l1_2 + 2)] = [80, 40, 200]
-                        _cap_2 = "Frame iniziale (striscia selettiva disattivata)"
-                        if stripe_mod_on_2:
-                            _cap_2 = ("Frame iniziale — banda = video dedicato caricato"
-                                    if _stripe_prev_frame_2 is not None else
-                                    "Frame iniziale — banda viola = fallback (nessun video caricato)")
-                        st.image(
-                            _pf_2,
-                            caption=_cap_2,
-                            use_container_width=True
-                        )
-                        if stripe_mod_on_2 and _stripe_prev_frame_2 is not None:
-                            def _capture_framing_cb_2(_vj_genre=vj_genre, _pos=stripe_mod_pos_2, _len_pos=stripe_length_pos_pct_2):
-                                # on_click gira PRIMA del rerun dello script: a
-                                # questo punto il radio/slider sotto non sono
-                                # ancora stati ridisegnati in QUESTO nuovo run,
-                                # quindi impostare session_state qui e' sicuro
-                                # (farlo dentro il corpo dell'if st.button, DOPO
-                                # che quei widget erano gia' stati disegnati in
-                                # questo stesso passaggio, darebbe invece
-                                # 'cannot be modified after widget has been
-                                # instantiated').
-                                st.session_state[f"stripe_content_mode_2_{_vj_genre}"] = "Il contenuto segue la banda"
-                                st.session_state[f"stripe_anchor_pos_2_{_vj_genre}"] = _pos
-                                st.session_state[f"stripe_anchor_length_pos_2_{_vj_genre}"] = _len_pos
-                            st.button(
-                                "🎥 Cattura questa inquadratura come punto di ancoraggio",
-                                key=f"capture_framing_btn_2_{vj_genre}",
-                                on_click=_capture_framing_cb_2,
-                                help="Diverso dalla cattura immagine sotto: qui NON si "
-                                     "congela un fotogramma, si blocca solo la ZONA (la "
-                                     "porzione di spazio) che la banda sta mostrando ORA "
-                                     "in anteprima — il contenuto continua a essere video "
-                                     "vivo, in movimento, ma sempre da quella stessa zona "
-                                     "del video sorgente, ovunque sposti poi la banda con "
-                                     "'Posizione banda'. Usa gli slider di posizione sopra "
-                                     "per inquadrare il soggetto (es. un occhio) qui in "
-                                     "anteprima, poi premi questo bottone invece di tarare "
-                                     "a mano gli slider 'Punto sorgente'."
-                            )
-                        if stripe_mod_on_2 and _stripe_prev_frame_2 is not None:
-                            col_cap1_2, col_cap2_2 = st.columns([2, 1])
-                            with col_cap1_2:
-                                if st.button(
-                                    "📸 Cattura questo ritaglio come immagine fissa",
-                                    key=f"capture_stripe_btn_2_{vj_genre}",
-                                    help="Congela il contenuto mostrato ora nella banda "
-                                         "(rilettura ad alta risoluzione dal video sorgente, "
-                                         "non dall'anteprima ridotta) come immagine statica. "
-                                         "Dopo la cattura puoi spostarla liberamente con "
-                                         "'Posizione banda' senza che cambi più nel tempo."
-                                ):
-                                    _hq_frame_2 = get_preview_frame_from_upload(_stripe_prev_source_2, max_w=1920)
-                                    if _hq_frame_2 is None:
-                                        st.warning(
-                                            "⚠️ Non sono riuscito a rileggere il video ad alta "
-                                            "risoluzione per la cattura."
-                                        )
-                                    else:
-                                        _hh_2, _hw_2 = _hq_frame_2.shape[:2]
-                                        _hanchor_pos_2 = stripe_content_anchor_pos_2 if stripe_content_follows_2 else stripe_mod_pos_2
-                                        _hanchor_len_2 = stripe_content_anchor_length_pos_2 if stripe_content_follows_2 else stripe_length_pos_pct_2
-                                        if stripe_mod_orient_2 == "Orizzontale":
-                                            _hband_h_2 = max(1, int(_hh_2 * stripe_mod_pct_2 / 100.0))
-                                            _hband_w_2 = max(1, int(_hw_2 * stripe_length_pct_2 / 100.0))
-                                            _hchc_2 = int(_hh_2 * _hanchor_pos_2 / 100.0)
-                                            _hp0_2 = max(0, min(_hh_2 - _hband_h_2, _hchc_2 - _hband_h_2 // 2))
-                                            _hp1_2 = min(_hh_2, _hp0_2 + _hband_h_2)
-                                            _hcwc_2 = int(_hw_2 * _hanchor_len_2 / 100.0)
-                                            _hl0_2 = max(0, min(_hw_2 - _hband_w_2, _hcwc_2 - _hband_w_2 // 2))
-                                            _hl1_2 = min(_hw_2, _hl0_2 + _hband_w_2)
-                                        else:
-                                            _hband_w_2 = max(1, int(_hw_2 * stripe_mod_pct_2 / 100.0))
-                                            _hband_h_2 = max(1, int(_hh_2 * stripe_length_pct_2 / 100.0))
-                                            _hcwc_2 = int(_hw_2 * _hanchor_pos_2 / 100.0)
-                                            _hl0_2 = max(0, min(_hw_2 - _hband_w_2, _hcwc_2 - _hband_w_2 // 2))
-                                            _hl1_2 = min(_hw_2, _hl0_2 + _hband_w_2)
-                                            _hchc_2 = int(_hh_2 * _hanchor_len_2 / 100.0)
-                                            _hp0_2 = max(0, min(_hh_2 - _hband_h_2, _hchc_2 - _hband_h_2 // 2))
-                                            _hp1_2 = min(_hh_2, _hp0_2 + _hband_h_2)
-                                        st.session_state[f"_frozen_stripe_crop_2_{vj_genre}"] = (
-                                            _hq_frame_2[_hp0_2:_hp1_2, _hl0_2:_hl1_2].copy()
-                                        )
-                                        st.success("Ritaglio catturato — spunta 'Usa il ritaglio catturato' qui sotto.")
-                            with col_cap2_2:
-                                if st.session_state.get(f"_frozen_stripe_crop_2_{vj_genre}") is not None:
-                                    if st.button("🗑️ Rimuovi", key=f"clear_frozen_stripe_2_{vj_genre}"):
-                                        st.session_state.pop(f"_frozen_stripe_crop_2_{vj_genre}", None)
-                                        st.rerun()
+                                        _hband_w_2 = max(1, int(_hw_2 * stripe_mod_pct_2 / 100.0))
+                                        _hband_h_2 = max(1, int(_hh_2 * stripe_length_pct_2 / 100.0))
+                                        _hcwc_2 = int(_hw_2 * _hanchor_pos_2 / 100.0)
+                                        _hl0_2 = max(0, min(_hw_2 - _hband_w_2, _hcwc_2 - _hband_w_2 // 2))
+                                        _hl1_2 = min(_hw_2, _hl0_2 + _hband_w_2)
+                                        _hchc_2 = int(_hh_2 * _hanchor_len_2 / 100.0)
+                                        _hp0_2 = max(0, min(_hh_2 - _hband_h_2, _hchc_2 - _hband_h_2 // 2))
+                                        _hp1_2 = min(_hh_2, _hp0_2 + _hband_h_2)
+                                    st.session_state[f"_frozen_stripe_crop_2_{vj_genre}"] = (
+                                        _hq_frame_2[_hp0_2:_hp1_2, _hl0_2:_hl1_2].copy()
+                                    )
+                                    st.success("Ritaglio catturato — spunta 'Usa il ritaglio catturato' qui sotto.")
+                        with col_cap2_2:
+                            if st.session_state.get(f"_frozen_stripe_crop_2_{vj_genre}") is not None:
+                                if st.button("🗑️ Rimuovi", key=f"clear_frozen_stripe_2_{vj_genre}"):
+                                    st.session_state.pop(f"_frozen_stripe_crop_2_{vj_genre}", None)
+                                    st.rerun()
 
-                        stripe_frozen_crop_2 = st.session_state.get(f"_frozen_stripe_crop_2_{vj_genre}") if stripe_mod_on_2 else None
-                        if stripe_mod_on_2 and stripe_frozen_crop_2 is not None:
-                            _col_fz1_2, _col_fz2_2 = st.columns([1, 2])
-                            with _col_fz1_2:
-                                st.image(stripe_frozen_crop_2, caption="Catturato")
-                            with _col_fz2_2:
-                                stripe_use_frozen_2 = st.checkbox(
-                                    "Usa il ritaglio catturato (immagine fissa)",
-                                    value=True, key=f"use_frozen_stripe_2_{vj_genre}",
-                                    help="La banda mostrerà questa immagine fissa invece del "
-                                         "video dal vivo — spostala ovunque con 'Posizione "
-                                         "banda' senza che il contenuto cambi mai nel tempo. "
-                                         "Despunta per tornare a mostrare il video dal vivo."
-                                )
+                    stripe_frozen_crop_2 = st.session_state.get(f"_frozen_stripe_crop_2_{vj_genre}") if stripe_mod_on_2 else None
+                    if stripe_mod_on_2 and stripe_frozen_crop_2 is not None:
+                        _col_fz1_2, _col_fz2_2 = st.columns([1, 2])
+                        with _col_fz1_2:
+                            st.image(stripe_frozen_crop_2, caption="Catturato")
+                        with _col_fz2_2:
+                            stripe_use_frozen_2 = st.checkbox(
+                                "Usa il ritaglio catturato (immagine fissa)",
+                                value=True, key=f"use_frozen_stripe_2_{vj_genre}",
+                                help="La banda mostrerà questa immagine fissa invece del "
+                                     "video dal vivo — spostala ovunque con 'Posizione "
+                                     "banda' senza che il contenuto cambi mai nel tempo. "
+                                     "Despunta per tornare a mostrare il video dal vivo."
+                            )
 
             st.markdown("---")
             crossfade_on = st.toggle(

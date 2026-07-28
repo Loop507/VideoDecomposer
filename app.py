@@ -3821,8 +3821,25 @@ def main():
                 _t_stage = time.perf_counter()
 
                 p_bar.progress(0.75, text="Scrittura video...")
-                final.write_videofile(out_v, codec="libx264", audio_codec="aac",
-                                      preset="ultrafast", logger=None)
+                try:
+                    final.write_videofile(out_v, codec="libx264", audio_codec="aac",
+                                          preset="ultrafast", logger=None)
+                except Exception as _enc_err:
+                    # Stesso bug noto dell'encoder AAC nativo di FFmpeg
+                    # visto sulla preview ("Assertion diff >= 0 && diff <=
+                    # 120 failed at aacenc.c") puo' in teoria capitare anche
+                    # qui. Qui pero' l'audio e' DAVVERO nuovo (mixato da piu'
+                    # sorgenti a volumi diversi), quindi non si puo' semplice-
+                    # mente copiare come nella preview — si ritenta pero' con
+                    # un bitrate audio fisso esplicito, che nella pratica fa
+                    # spesso evitare l'assertion (percorso interno diverso
+                    # nell'encoder rispetto al bitrate variabile di default).
+                    if "aacenc" in str(_enc_err) or "Broken pipe" in str(_enc_err):
+                        final.write_videofile(out_v, codec="libx264", audio_codec="aac",
+                                              audio_bitrate="192k",
+                                              preset="ultrafast", logger=None)
+                    else:
+                        raise
                 final.close()
 
                 # Il write_videofile qui sopra e' dove TUTTO il lavoro lazy
@@ -3857,8 +3874,26 @@ def main():
                 prev_v = os.path.join(tempfile.gettempdir(), f"preview_{random.randint(0,9999)}.mp4")
                 prev_src = VideoFileClip(out_v)
                 prev_clip = prev_src.resize(height=480)
-                prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac",
-                                          preset="ultrafast", logger=None)
+                # L'audio qui NON cambia affatto (solo il video viene
+                # ridimensionato) — quindi si copia lo stream audio gia'
+                # codificato invece di ri-codificarlo da capo. Oltre a
+                # essere piu' veloce, evita un bug noto dell'encoder AAC
+                # nativo di FFmpeg ("Assertion diff >= 0 && diff <= 120
+                # failed at aacenc.c") che puo' scattare proprio quando si
+                # ri-codifica audio gia' passato una volta per un encoder
+                # AAC. "-c:a copy" (aggiunto DOPO audio_codec="aac" nei
+                # parametri, cosi' vince sulla riga di comando FFmpeg)
+                # bypassa l'encoder del tutto per questo passaggio.
+                try:
+                    prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac",
+                                              preset="ultrafast", logger=None,
+                                              ffmpeg_params=["-c:a", "copy"])
+                except Exception:
+                    # Fallback raro: se lo stream copy fallisce per qualche
+                    # incompatibilita' di formato, si torna alla ri-codifica
+                    # normale (il bug aacenc non si presenta sempre).
+                    prev_clip.write_videofile(prev_v, codec="libx264", audio_codec="aac",
+                                              preset="ultrafast", logger=None)
                 prev_clip.close()
                 prev_src.close()
                 _prof["Encoding Preview"] = time.perf_counter() - _t_stage

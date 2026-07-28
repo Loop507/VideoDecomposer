@@ -2719,104 +2719,6 @@ def main():
                             _cap = ("Frame iniziale — banda = video dedicato caricato"
                                     if _stripe_prev_frame is not None else
                                     "Frame iniziale — banda viola = fallback (nessun video caricato)")
-                        # NOTA: l'immagine viene mostrata una volta sola, PIU' AVANTI
-                        # (dopo che anche la banda 2 ha disegnato sopra lo stesso
-                        # frame) — cosi' l'utente vede UN'unica anteprima con
-                        # entrambe le bande sovrapposte, invece di due immagini
-                        # separate una sotto l'altra.
-                        if stripe_mod_on and _stripe_prev_frame is not None:
-                            def _capture_framing_cb(_vj_genre=vj_genre, _pos=stripe_mod_pos, _len_pos=stripe_length_pos_pct):
-                                # on_click gira PRIMA del rerun dello script: a
-                                # questo punto il radio/slider sotto non sono
-                                # ancora stati ridisegnati in QUESTO nuovo run,
-                                # quindi impostare session_state qui e' sicuro
-                                # (farlo dentro il corpo dell'if st.button, DOPO
-                                # che quei widget erano gia' stati disegnati in
-                                # questo stesso passaggio, darebbe invece
-                                # 'cannot be modified after widget has been
-                                # instantiated').
-                                st.session_state[f"stripe_content_mode_{_vj_genre}"] = "Il contenuto segue la banda"
-                                st.session_state[f"stripe_anchor_pos_{_vj_genre}"] = _pos
-                                st.session_state[f"stripe_anchor_length_pos_{_vj_genre}"] = _len_pos
-                            st.button(
-                                "🎥 Cattura questa inquadratura come punto di ancoraggio",
-                                key=f"capture_framing_btn_{vj_genre}",
-                                on_click=_capture_framing_cb,
-                                help="Diverso dalla cattura immagine sotto: qui NON si "
-                                     "congela un fotogramma, si blocca solo la ZONA (la "
-                                     "porzione di spazio) che la banda sta mostrando ORA "
-                                     "in anteprima — il contenuto continua a essere video "
-                                     "vivo, in movimento, ma sempre da quella stessa zona "
-                                     "del video sorgente, ovunque sposti poi la banda con "
-                                     "'Posizione banda'. Usa gli slider di posizione sopra "
-                                     "per inquadrare il soggetto (es. un occhio) qui in "
-                                     "anteprima, poi premi questo bottone invece di tarare "
-                                     "a mano gli slider 'Punto sorgente'."
-                            )
-                        if stripe_mod_on and _stripe_prev_frame is not None:
-                            col_cap1, col_cap2 = st.columns([2, 1])
-                            with col_cap1:
-                                if st.button(
-                                    "📸 Cattura questo ritaglio come immagine fissa",
-                                    key=f"capture_stripe_btn_{vj_genre}",
-                                    help="Congela il contenuto mostrato ora nella banda "
-                                         "(rilettura ad alta risoluzione dal video sorgente, "
-                                         "non dall'anteprima ridotta) come immagine statica. "
-                                         "Dopo la cattura puoi spostarla liberamente con "
-                                         "'Posizione banda' senza che cambi più nel tempo."
-                                ):
-                                    _hq_frame = get_preview_frame_from_upload(_stripe_prev_source, max_w=1920)
-                                    if _hq_frame is None:
-                                        st.warning(
-                                            "⚠️ Non sono riuscito a rileggere il video ad alta "
-                                            "risoluzione per la cattura."
-                                        )
-                                    else:
-                                        _hh, _hw = _hq_frame.shape[:2]
-                                        _hanchor_pos = stripe_content_anchor_pos if stripe_content_follows else stripe_mod_pos
-                                        _hanchor_len = stripe_content_anchor_length_pos if stripe_content_follows else stripe_length_pos_pct
-                                        if stripe_mod_orient == "Orizzontale":
-                                            _hband_h = max(1, int(_hh * stripe_mod_pct / 100.0))
-                                            _hband_w = max(1, int(_hw * stripe_length_pct / 100.0))
-                                            _hchc = int(_hh * _hanchor_pos / 100.0)
-                                            _hp0 = max(0, min(_hh - _hband_h, _hchc - _hband_h // 2))
-                                            _hp1 = min(_hh, _hp0 + _hband_h)
-                                            _hcwc = int(_hw * _hanchor_len / 100.0)
-                                            _hl0 = max(0, min(_hw - _hband_w, _hcwc - _hband_w // 2))
-                                            _hl1 = min(_hw, _hl0 + _hband_w)
-                                        else:
-                                            _hband_w = max(1, int(_hw * stripe_mod_pct / 100.0))
-                                            _hband_h = max(1, int(_hh * stripe_length_pct / 100.0))
-                                            _hcwc = int(_hw * _hanchor_pos / 100.0)
-                                            _hl0 = max(0, min(_hw - _hband_w, _hcwc - _hband_w // 2))
-                                            _hl1 = min(_hw, _hl0 + _hband_w)
-                                            _hchc = int(_hh * _hanchor_len / 100.0)
-                                            _hp0 = max(0, min(_hh - _hband_h, _hchc - _hband_h // 2))
-                                            _hp1 = min(_hh, _hp0 + _hband_h)
-                                        st.session_state[f"_frozen_stripe_crop_{vj_genre}"] = (
-                                            _hq_frame[_hp0:_hp1, _hl0:_hl1].copy()
-                                        )
-                                        st.success("Ritaglio catturato — spunta 'Usa il ritaglio catturato' qui sotto.")
-                            with col_cap2:
-                                if st.session_state.get(f"_frozen_stripe_crop_{vj_genre}") is not None:
-                                    if st.button("🗑️ Rimuovi", key=f"clear_frozen_stripe_{vj_genre}"):
-                                        st.session_state.pop(f"_frozen_stripe_crop_{vj_genre}", None)
-                                        st.rerun()
-
-                        stripe_frozen_crop = st.session_state.get(f"_frozen_stripe_crop_{vj_genre}") if stripe_mod_on else None
-                        if stripe_mod_on and stripe_frozen_crop is not None:
-                            _col_fz1, _col_fz2 = st.columns([1, 2])
-                            with _col_fz1:
-                                st.image(stripe_frozen_crop, caption="Catturato")
-                            with _col_fz2:
-                                stripe_use_frozen = st.checkbox(
-                                    "Usa il ritaglio catturato (immagine fissa)",
-                                    value=True, key=f"use_frozen_stripe_{vj_genre}",
-                                    help="La banda mostrerà questa immagine fissa invece del "
-                                         "video dal vivo — spostala ovunque con 'Posizione "
-                                         "banda' senza che il contenuto cambi mai nel tempo. "
-                                         "Despunta per tornare a mostrare il video dal vivo."
-                                )
 
             st.markdown("---")
             if MODULATION_LAB_AVAILABLE:
@@ -3130,6 +3032,104 @@ def main():
                         caption=_cap_2,
                         use_container_width=True
                     )
+
+                    # Bottoni di cattura per la banda 1 — messi qui, DOPO
+                    # l'immagine combinata sopra (che mostra entrambe le
+                    # bande), cosi' appaiono nell'ordine naturale invece di
+                    # comparire prima che l'anteprima sia visibile.
+                    if stripe_mod_on and _stripe_prev_frame is not None:
+                        def _capture_framing_cb(_vj_genre=vj_genre, _pos=stripe_mod_pos, _len_pos=stripe_length_pos_pct):
+                            # on_click gira PRIMA del rerun dello script: a
+                            # questo punto il radio/slider sotto non sono
+                            # ancora stati ridisegnati in QUESTO nuovo run,
+                            # quindi impostare session_state qui e' sicuro
+                            # (farlo dentro il corpo dell'if st.button, DOPO
+                            # che quei widget erano gia' stati disegnati in
+                            # questo stesso passaggio, darebbe invece
+                            # 'cannot be modified after widget has been
+                            # instantiated').
+                            st.session_state[f"stripe_content_mode_{_vj_genre}"] = "Il contenuto segue la banda"
+                            st.session_state[f"stripe_anchor_pos_{_vj_genre}"] = _pos
+                            st.session_state[f"stripe_anchor_length_pos_{_vj_genre}"] = _len_pos
+                        st.button(
+                            "🎥 Cattura questa inquadratura come punto di ancoraggio",
+                            key=f"capture_framing_btn_{vj_genre}",
+                            on_click=_capture_framing_cb,
+                            help="Diverso dalla cattura immagine sotto: qui NON si "
+                                 "congela un fotogramma, si blocca solo la ZONA (la "
+                                 "porzione di spazio) che la banda sta mostrando ORA "
+                                 "in anteprima — il contenuto continua a essere video "
+                                 "vivo, in movimento, ma sempre da quella stessa zona "
+                                 "del video sorgente, ovunque sposti poi la banda con "
+                                 "'Posizione banda'. Usa gli slider di posizione sopra "
+                                 "per inquadrare il soggetto (es. un occhio) qui in "
+                                 "anteprima, poi premi questo bottone invece di tarare "
+                                 "a mano gli slider 'Punto sorgente'."
+                        )
+                    if stripe_mod_on and _stripe_prev_frame is not None:
+                        col_cap1, col_cap2 = st.columns([2, 1])
+                        with col_cap1:
+                            if st.button(
+                                "📸 Cattura questo ritaglio come immagine fissa",
+                                key=f"capture_stripe_btn_{vj_genre}",
+                                help="Congela il contenuto mostrato ora nella banda "
+                                     "(rilettura ad alta risoluzione dal video sorgente, "
+                                     "non dall'anteprima ridotta) come immagine statica. "
+                                     "Dopo la cattura puoi spostarla liberamente con "
+                                     "'Posizione banda' senza che cambi più nel tempo."
+                            ):
+                                _hq_frame = get_preview_frame_from_upload(_stripe_prev_source, max_w=1920)
+                                if _hq_frame is None:
+                                    st.warning(
+                                        "⚠️ Non sono riuscito a rileggere il video ad alta "
+                                        "risoluzione per la cattura."
+                                    )
+                                else:
+                                    _hh, _hw = _hq_frame.shape[:2]
+                                    _hanchor_pos = stripe_content_anchor_pos if stripe_content_follows else stripe_mod_pos
+                                    _hanchor_len = stripe_content_anchor_length_pos if stripe_content_follows else stripe_length_pos_pct
+                                    if stripe_mod_orient == "Orizzontale":
+                                        _hband_h = max(1, int(_hh * stripe_mod_pct / 100.0))
+                                        _hband_w = max(1, int(_hw * stripe_length_pct / 100.0))
+                                        _hchc = int(_hh * _hanchor_pos / 100.0)
+                                        _hp0 = max(0, min(_hh - _hband_h, _hchc - _hband_h // 2))
+                                        _hp1 = min(_hh, _hp0 + _hband_h)
+                                        _hcwc = int(_hw * _hanchor_len / 100.0)
+                                        _hl0 = max(0, min(_hw - _hband_w, _hcwc - _hband_w // 2))
+                                        _hl1 = min(_hw, _hl0 + _hband_w)
+                                    else:
+                                        _hband_w = max(1, int(_hw * stripe_mod_pct / 100.0))
+                                        _hband_h = max(1, int(_hh * stripe_length_pct / 100.0))
+                                        _hcwc = int(_hw * _hanchor_pos / 100.0)
+                                        _hl0 = max(0, min(_hw - _hband_w, _hcwc - _hband_w // 2))
+                                        _hl1 = min(_hw, _hl0 + _hband_w)
+                                        _hchc = int(_hh * _hanchor_len / 100.0)
+                                        _hp0 = max(0, min(_hh - _hband_h, _hchc - _hband_h // 2))
+                                        _hp1 = min(_hh, _hp0 + _hband_h)
+                                    st.session_state[f"_frozen_stripe_crop_{vj_genre}"] = (
+                                        _hq_frame[_hp0:_hp1, _hl0:_hl1].copy()
+                                    )
+                                    st.success("Ritaglio catturato — spunta 'Usa il ritaglio catturato' qui sotto.")
+                        with col_cap2:
+                            if st.session_state.get(f"_frozen_stripe_crop_{vj_genre}") is not None:
+                                if st.button("🗑️ Rimuovi", key=f"clear_frozen_stripe_{vj_genre}"):
+                                    st.session_state.pop(f"_frozen_stripe_crop_{vj_genre}", None)
+                                    st.rerun()
+
+                    stripe_frozen_crop = st.session_state.get(f"_frozen_stripe_crop_{vj_genre}") if stripe_mod_on else None
+                    if stripe_mod_on and stripe_frozen_crop is not None:
+                        _col_fz1, _col_fz2 = st.columns([1, 2])
+                        with _col_fz1:
+                            st.image(stripe_frozen_crop, caption="Catturato")
+                        with _col_fz2:
+                            stripe_use_frozen = st.checkbox(
+                                "Usa il ritaglio catturato (immagine fissa)",
+                                value=True, key=f"use_frozen_stripe_{vj_genre}",
+                                help="La banda mostrerà questa immagine fissa invece del "
+                                     "video dal vivo — spostala ovunque con 'Posizione "
+                                     "banda' senza che il contenuto cambi mai nel tempo. "
+                                     "Despunta per tornare a mostrare il video dal vivo."
+                            )
                     if stripe_mod_on_2 and _stripe_prev_frame_2 is not None:
                         def _capture_framing_cb_2(_vj_genre=vj_genre, _pos=stripe_mod_pos_2, _len_pos=stripe_length_pos_pct_2):
                             # on_click gira PRIMA del rerun dello script: a

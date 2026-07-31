@@ -1039,6 +1039,36 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
 
         QUIET_ENERGY_THRESH = 0.15
 
+        # Passo ritmico LOCALE dentro un buco, stimato dagli onset REALI
+        # (indipendenti dal beat tracker) caduti in [t0, t1). Serve a
+        # distinguere due situazioni molto diverse quando il buco ha energia
+        # (altrimenti gia' coperte da QUIET_ENERGY_THRESH sopra):
+        #   1) il beat tracker ha solo perso l'aggancio ma il brano CONTINUA
+        #      al suo passo veloce abituale -> qui non ci sono abbastanza
+        #      onset per stimare un passo diverso, o il passo locale e'
+        #      simile a avg_interval -> riempimento al passo veloce globale
+        #      resta corretto (comportamento di prima).
+        #   2) il brano e' DAVVERO rallentato in quel punto (breakdown,
+        #      sezione melodica, groove piu' lento) con energia reale, non
+        #      silenzio -> gli onset locali cadono molto piu' diradati del
+        #      solito. Riempire comunque al passo veloce globale
+        #      trasformerebbe un rallentamento musicale in una raffica di
+        #      tagli innaturale (l'opposto dell'effetto voluto). Qui usiamo
+        #      il passo locale reale invece del passo globale.
+        _onsets_sorted = sorted(onset_times) if onset_times else []
+
+        def _local_onset_pace(t0, t1):
+            if len(_onsets_sorted) < 2:
+                return None
+            lo = bisect.bisect_left(_onsets_sorted, t0)
+            hi = bisect.bisect_right(_onsets_sorted, t1)
+            local = _onsets_sorted[lo:hi]
+            if len(local) < 2:
+                return None
+            gaps = [local[j+1] - local[j] for j in range(len(local) - 1)]
+            gaps = [g for g in gaps if g > 0]
+            return (sum(gaps) / len(gaps)) if gaps else None
+
         # --- Segmenti base: un elemento per ogni intervallo beat-to-beat ---
         # Quando il beat tracker perde l'aggancio per >4s (break, cambio di
         # sezione, silenzio) il vecchio codice riempiva SEMPRE il buco con
@@ -1053,17 +1083,37 @@ def generate_dj_remix(video_clips, duration, fps, slice_dur, loop_reps,
         # "riempimento" scelto per il buco. Ora guardiamo l'energia:
         # silenzio vero -> una sola slice lunga (nessun taglio finto);
         # energia presente ma beat non rilevato -> griglia piu' larga.
+        # Soglia di "buco anomalo" relativa all'intervallo beat medio reale,
+        # non piu' fissa a 4.0s assoluti. Su un brano veloce (es. techno a
+        # 140 BPM, avg_interval ~0.45s) un tratto di 2-3s prima del primo
+        # beat rilevato (intro/riser breve, comune prima che entri la cassa)
+        # restava SOTTO i 4.0s fissi e quindi finiva in un unico
+        # base_segment: nella fase di subdivisione (sv>=1.0 raggruppa n
+        # segmenti come se fossero normali intervalli beat-to-beat) quel
+        # tratto anomalo veniva trattato come "un beat" e diventava una sola
+        # slice ininterrotta — da qui i primi secondi "senza effetto"
+        # percepiti su brani veloci. Ora la soglia scala con avg_interval:
+        # 3x l'intervallo medio reale (con un pavimento di 1.0s per non
+        # scattare su normali piccole fluttuazioni/singoli beat mancati).
+        anomaly_threshold = max(1.0, avg_interval * 3.0)
         base_segments = []
         for i in range(len(cut_points) - 1):
             d = cut_points[i+1] - cut_points[i]
             if d <= 0:
                 continue
-            if d > 4.0:
+            if d > anomaly_threshold:
                 gap_energy = _avg_energy(cut_points[i], cut_points[i+1])
                 if gap_energy < QUIET_ENERGY_THRESH:
                     base_segments.append(d)
                 else:
-                    interval = max(avg_interval * 1.5, 1.0)
+                    local_pace = _local_onset_pace(cut_points[i], cut_points[i+1])
+                    if local_pace is not None and local_pace > avg_interval * 1.8:
+                        # Rallentamento reale: rispetta il passo locale
+                        # effettivo invece di forzare il passo veloce
+                        # globale del resto del brano.
+                        interval = max(local_pace, 1.0 / max(fps, 1))
+                    else:
+                        interval = max(avg_interval * 1.5, 1.0)
                     n_fill = max(1, round(d / interval))
                     fill_d = d / n_fill
                     base_segments.extend([fill_d] * n_fill)

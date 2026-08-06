@@ -1945,17 +1945,92 @@ def main():
     with c2:
         if app_mode == "Decompose":
             st.subheader("Ritmo e Strisce")
-            r_rand = st.toggle("Ritmo Random")
-            r_col1, r_col2 = st.columns(2)
-            r_a = r_col1.number_input("Inizio/Min (s)", 0.05, 5.0, 0.2)
-            r_b = r_col2.number_input("Fine/Max (s)",   0.05, 5.0, 1.0)
-            st.markdown("---")
-            use_scan = st.checkbox("ATTIVA STRISCE", value=True)
-            s_rand   = st.toggle("Spessore Random", disabled=not use_scan)
-            s_col1, s_col2 = st.columns(2)
-            s_a = s_col1.number_input("Inizio/Min (px)", 1, 300, 10, disabled=not use_scan)
-            s_b = s_col2.number_input("Fine/Max (px)",   1, 300, 80, disabled=not use_scan)
-            scan_dir = st.selectbox("Asse", ["Orizzontale", "Verticale", "Mix"], disabled=not use_scan)
+
+            # Preset "automatici" — combinano in un colpo solo ritmo dei tagli
+            # e spessore/asse delle strisce, sul modello di VJ_PRESETS in VJ
+            # Mode. Non richiedono audio: sono solo scorciatoie di stile per
+            # evitare di tarare a mano min/max e px ogni volta.
+            DECOMPOSE_PRESETS = {
+                "Lento Cinematico":    dict(r_a=0.8,  r_b=2.0, r_rand=True,
+                                             s_a=20, s_b=60,  s_rand=False, scan_dir="Orizzontale"),
+                "Standard Bilanciato": dict(r_a=0.2,  r_b=1.0, r_rand=True,
+                                             s_a=10, s_b=80,  s_rand=True,  scan_dir="Mix"),
+                "Nervoso Glitch":      dict(r_a=0.1,  r_b=0.4, r_rand=True,
+                                             s_a=5,  s_b=40,  s_rand=True,  scan_dir="Verticale"),
+                "Random Estremo":      dict(r_a=0.05, r_b=3.0, r_rand=True,
+                                             s_a=1,  s_b=150, s_rand=True,  scan_dir="Mix"),
+            }
+
+            auto_decompose = st.toggle(
+                "Automatico",
+                value=False,
+                key="auto_decompose_toggle",
+                help="Applica un preset pronto per ritmo dei tagli e strisce, "
+                     "invece di tarare a mano min/max secondi e px."
+            )
+
+            if auto_decompose:
+                decompose_style = st.selectbox(
+                    "Stile",
+                    list(DECOMPOSE_PRESETS.keys()),
+                    index=1,
+                    key="decompose_style_select",
+                )
+                _dp = DECOMPOSE_PRESETS[decompose_style]
+                r_rand, r_a, r_b = _dp["r_rand"], _dp["r_a"], _dp["r_b"]
+                s_rand, s_a, s_b, scan_dir = _dp["s_rand"], _dp["s_a"], _dp["s_b"], _dp["scan_dir"]
+
+                # --- Auto-adattamento anti-crash --------------------------------
+                # Il preset da solo non sa quanto e' lunga la clip finale ne'
+                # quante sorgenti sono caricate: "Nervoso Glitch"/"Random Estremo"
+                # su una Durata Totale alta possono generare migliaia di
+                # frammenti e mandare in crash il render per esaurimento RAM
+                # (stesso problema gia' risolto in automatico su VJ Mode).
+                # Il widget "Durata Totale (s)" e' definito piu' avanti nello
+                # script, ma la sua key resta in session_state da un run
+                # precedente: leggerla qui (con fallback al default) permette
+                # di stimare i frammenti PRIMA di lanciare il render.
+                # In entrambe le modalita' di mix (Random: un fragment alla
+                # volta lungo tutta la timeline; Quote Fisse: i budget delle
+                # sorgenti sommano alla durata totale) il numero di frammenti
+                # e' comunque ~durata/r_a al caso peggiore (ritmo piu' fitto
+                # del preset) — stessa stima gia' usata in progress bar.
+                _durata_est = st.session_state.get("durata_input", 15)
+                _SAFE_TARGET_DECOMPOSE = 500
+                _est_fragments_dec = int(_durata_est / max(r_a, 0.01))
+
+                _auto_coarsen_dec = 1.0
+                if _est_fragments_dec > _SAFE_TARGET_DECOMPOSE:
+                    while _auto_coarsen_dec < 16.0 and \
+                            (_est_fragments_dec / _auto_coarsen_dec) > _SAFE_TARGET_DECOMPOSE:
+                        _auto_coarsen_dec *= 2.0
+                    r_a = r_a * _auto_coarsen_dec
+                    r_b = r_b * _auto_coarsen_dec
+                    st.info(
+                        f"ℹ️ Automatico: ritmo allargato x{_auto_coarsen_dec:.0f} "
+                        f"(da {_dp['r_a']}s>>{_dp['r_b']}s a {r_a:.2f}s>>{r_b:.2f}s) "
+                        f"per restare sotto la soglia di sicurezza RAM. "
+                        f"Oggetti stimati ~{_est_fragments_dec} → "
+                        f"~{int(_est_fragments_dec / _auto_coarsen_dec)}."
+                    )
+
+                st.caption(
+                    f"_Preset {decompose_style}: ritmo {r_a:.2f}s >> {r_b:.2f}s · "
+                    f"strisce {_dp['s_a']}px >> {_dp['s_b']}px · asse {_dp['scan_dir']}_"
+                )
+                use_scan = st.checkbox("ATTIVA STRISCE", value=True)
+            else:
+                r_rand = st.toggle("Ritmo Random")
+                r_col1, r_col2 = st.columns(2)
+                r_a = r_col1.number_input("Inizio/Min (s)", 0.05, 5.0, 0.2)
+                r_b = r_col2.number_input("Fine/Max (s)",   0.05, 5.0, 1.0)
+                st.markdown("---")
+                use_scan = st.checkbox("ATTIVA STRISCE", value=True)
+                s_rand   = st.toggle("Spessore Random", disabled=not use_scan)
+                s_col1, s_col2 = st.columns(2)
+                s_a = s_col1.number_input("Inizio/Min (px)", 1, 300, 10, disabled=not use_scan)
+                s_b = s_col2.number_input("Fine/Max (px)",   1, 300, 80, disabled=not use_scan)
+                scan_dir = st.selectbox("Asse", ["Orizzontale", "Verticale", "Mix"], disabled=not use_scan)
             # default per variabili DJ non usate in Decompose
             slice_dur = 0.25; loop_reps = 2; stutter_prob = 0.4
             pitch_glitch = False; beat_slice_mode = False

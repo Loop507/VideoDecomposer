@@ -1978,7 +1978,6 @@ def main():
                 )
                 _dp = DECOMPOSE_PRESETS[decompose_style]
                 r_rand, r_a, r_b = _dp["r_rand"], _dp["r_a"], _dp["r_b"]
-                s_rand, s_a, s_b, scan_dir = _dp["s_rand"], _dp["s_a"], _dp["s_b"], _dp["scan_dir"]
 
                 # --- Auto-adattamento anti-crash --------------------------------
                 # Il preset da solo non sa quanto e' lunga la clip finale ne'
@@ -2015,22 +2014,46 @@ def main():
                     )
 
                 st.caption(
-                    f"_Preset {decompose_style}: ritmo {r_a:.2f}s >> {r_b:.2f}s · "
-                    f"strisce {_dp['s_a']}px >> {_dp['s_b']}px · asse {_dp['scan_dir']}_"
+                    f"_Preset {decompose_style}: ritmo {r_a:.2f}s >> {r_b:.2f}s_"
                 )
-                use_scan = st.checkbox("ATTIVA STRISCE", value=True)
             else:
+                decompose_style = None
                 r_rand = st.toggle("Ritmo Random")
                 r_col1, r_col2 = st.columns(2)
                 r_a = r_col1.number_input("Inizio/Min (s)", 0.05, 5.0, 0.2)
                 r_b = r_col2.number_input("Fine/Max (s)",   0.05, 5.0, 1.0)
-                st.markdown("---")
-                use_scan = st.checkbox("ATTIVA STRISCE", value=True)
-                s_rand   = st.toggle("Spessore Random", disabled=not use_scan)
-                s_col1, s_col2 = st.columns(2)
-                s_a = s_col1.number_input("Inizio/Min (px)", 1, 300, 10, disabled=not use_scan)
-                s_b = s_col2.number_input("Fine/Max (px)",   1, 300, 80, disabled=not use_scan)
-                scan_dir = st.selectbox("Asse", ["Orizzontale", "Verticale", "Mix"], disabled=not use_scan)
+
+            # --- Strisce: SEMPRE modificabili a mano -----------------------
+            # "Automatico" governa solo il ritmo (dove serve la protezione
+            # anti-crash); le strisce sono pura estetica visiva e non hanno
+            # alcun impatto sul numero di frammenti/oggetti in memoria, quindi
+            # restano sempre sotto controllo diretto dell'utente. Quando e'
+            # attivo un preset, i widget partono dai suoi valori (key legata
+            # allo stile, cosi' cambiando stile si riparte dai nuovi default)
+            # ma restano liberamente modificabili.
+            st.markdown("---")
+            _strisce_key_suffix = decompose_style if auto_decompose else "manual"
+            _s_defaults = DECOMPOSE_PRESETS[decompose_style] if auto_decompose else \
+                dict(s_a=10, s_b=80, s_rand=True, scan_dir="Orizzontale")
+            use_scan = st.checkbox("ATTIVA STRISCE", value=True)
+            s_rand = st.toggle(
+                "Spessore Random", value=_s_defaults["s_rand"],
+                disabled=not use_scan, key=f"s_rand_{_strisce_key_suffix}"
+            )
+            s_col1, s_col2 = st.columns(2)
+            s_a = s_col1.number_input(
+                "Inizio/Min (px)", 1, 300, _s_defaults["s_a"],
+                disabled=not use_scan, key=f"s_a_{_strisce_key_suffix}"
+            )
+            s_b = s_col2.number_input(
+                "Fine/Max (px)", 1, 300, _s_defaults["s_b"],
+                disabled=not use_scan, key=f"s_b_{_strisce_key_suffix}"
+            )
+            scan_dir = st.selectbox(
+                "Asse", ["Orizzontale", "Verticale", "Mix"],
+                index=["Orizzontale", "Verticale", "Mix"].index(_s_defaults["scan_dir"]),
+                disabled=not use_scan, key=f"scan_dir_{_strisce_key_suffix}"
+            )
             # default per variabili DJ non usate in Decompose
             slice_dur = 0.25; loop_reps = 2; stutter_prob = 0.4
             pitch_glitch = False; beat_slice_mode = False

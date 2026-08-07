@@ -707,6 +707,77 @@ def apply_selective_stripe(get_frame, t, duration, fps, opacity_curve,
     return frame
 
 
+# --- BANDE TEMPORALI (Temporal Band Slicer) ---
+def glitch_temporal_bands(frame, intensity=0.7, ampiezza_bande=0.5, spostamento=0.6, direzione=0.5):
+    """
+    Temporal Band Slicer: il frame viene tagliato in bande orizzontali di
+    altezza variabile; ciascuna banda viene ricollocata da una diversa
+    posizione spaziale dello STESSO frame (spostamento orizzontale O
+    verticale, mai entrambi sulla stessa banda — rif. Snorpey / Rosa
+    Menkman), senza alterare colori, luminosità o contrasto — puro
+    displacement geometrico, nessun blend, nessuna ricompressione.
+
+    Lavora direttamente su array numpy (H, W, 3) uint8.
+
+    Parametri:
+        frame          : np.ndarray (H, W, 3) uint8 — il frame in ingresso
+        intensity      : 0-1, probabilita' che una banda venga spostata
+        ampiezza_bande : 0-1, quanto sono grandi/irregolari le bande
+        spostamento    : 0-1, quanto lontano puo' saltare una banda
+        direzione      : 0 = solo orizzontale, 1 = solo verticale,
+                         0.5 = mix casuale banda per banda
+
+    Ritorna: np.ndarray (H, W, 3) uint8 — stesso shape di frame.
+    """
+    h, w = frame.shape[:2]
+
+    max_shift_x = max(10, int(w * (0.05 + 0.55 * spostamento)))
+    max_shift_y = max(6, int(h * (0.03 + 0.45 * spostamento)))
+    prob_band = float(np.clip(0.15 + 0.8 * intensity, 0.1, 0.95))
+    dir_v = float(np.clip(direzione, 0.0, 1.0))
+
+    min_band = max(4, int(6 + 10 * (1.0 - ampiezza_bande)))
+    max_band = max(min_band + 10, int(25 + 150 * ampiezza_bande))
+
+    heights = []
+    remaining = h
+    while remaining > 0:
+        bh = random.randint(min_band, max_band)
+        bh = min(bh, remaining)
+        heights.append(bh)
+        remaining -= bh
+
+    out = frame.copy()
+    y = 0
+    for bh in heights:
+        y_end = min(y + bh, h)
+        if random.random() < prob_band:
+            if random.random() < dir_v:
+                dx, dy = 0, random.randint(-max_shift_y, max_shift_y)
+            else:
+                dx, dy = random.randint(-max_shift_x, max_shift_x), 0
+            out[y:y_end] = np.roll(frame, (dy, dx), axis=(0, 1))[y:y_end]
+        y = y_end
+
+    return out
+
+
+def apply_temporal_bands_clip(get_frame, t, intensity, ampiezza_bande, spostamento, direzione):
+    """Wrapper per l'uso in .fl(): estrae il frame RGB (uint8) e applica
+    glitch_temporal_bands, preservando eventuale canale alpha invariato."""
+    frame = get_frame(t)
+    rgb = frame[:, :, :3].astype(np.uint8)
+    rgb_out = glitch_temporal_bands(
+        rgb, intensity=intensity, ampiezza_bande=ampiezza_bande,
+        spostamento=spostamento, direzione=direzione
+    )
+    if frame.shape[2] == 4:
+        out = frame.copy()
+        out[:, :, :3] = rgb_out
+        return out
+    return rgb_out
+
+
 # --- MOTORE PROCEDURALE (slit scan) ---
 def apply_procedural_slit_scan(get_frame, t, duration, val_a, val_b, is_random, scan_mode,
                                 rms_envelope=None):
@@ -3543,6 +3614,38 @@ def main():
             saturation_react_amount = 0.0
 
         st.markdown("---")
+        st.subheader("Bande Temporali")
+        temporal_bands_on = st.toggle(
+            "Attiva Bande Temporali", value=False,
+            help="Puro displacement geometrico: bande orizzontali dello stesso "
+                 "frame ricollocate da un'altra posizione spaziale (rif. Snorpey / "
+                 "Rosa Menkman). Nessuna alterazione di colore/luminosita'/contrasto."
+        )
+        if temporal_bands_on:
+            tb_col1, tb_col2 = st.columns(2)
+            with tb_col1:
+                tb_intensity = st.slider(
+                    "Intensita'", 0, 100, 70, step=5,
+                    help="Probabilita' che una banda venga spostata."
+                ) / 100.0
+                tb_spostamento = st.slider(
+                    "Spostamento", 0, 100, 60, step=5,
+                    help="Quanto lontano puo' saltare una banda."
+                ) / 100.0
+            with tb_col2:
+                tb_ampiezza = st.slider(
+                    "Ampiezza bande", 0, 100, 50, step=5,
+                    help="0 = bande sottili/uniformi, 100 = larghe/caotiche."
+                ) / 100.0
+                tb_direzione = st.slider(
+                    "Direzione (Orizz. > Vert.)", 0, 100, 50, step=5,
+                    help="0 = solo orizzontale, 100 = solo verticale, "
+                         "50 = mix casuale banda per banda."
+                ) / 100.0
+        else:
+            tb_intensity = tb_ampiezza = tb_spostamento = tb_direzione = 0.0
+
+        st.markdown("---")
 
         do_final = st.button("AVVIA RENDERING", use_container_width=True)
 
@@ -3643,6 +3746,16 @@ def main():
                         )
                     total_frags = engine.stats["fragments"]
                     mode_label = "Decompose"
+
+                    # --- Bande Temporali (Temporal Band Slicer) ---
+                    # Applicata SUBITO dopo la composizione del clip, prima di
+                    # qualsiasi altro post-processing (strisce/colore): meno
+                    # step incatenati sul .fl() precedente = minor rischio di
+                    # crash/instabilita' in fase di render.
+                    if temporal_bands_on:
+                        final = final.fl(lambda gf, t: apply_temporal_bands_clip(
+                            gf, t, tb_intensity, tb_ampiezza, tb_spostamento, tb_direzione))
+
                     if mix_mode == "Quote Fisse":
                         mix_log = "Quote Fisse — " + " / ".join(
                             f"V{k+1}:{quotas.get(k,0)}%" for k in paths.keys())
@@ -3652,6 +3765,12 @@ def main():
                                  f"* Strisce: {s_a}px >> {s_b}px (Random: {s_rand})\n"
                                  f"* Geometria: {scan_dir}\n"
                                  f"* Formato: {formato_label}")
+                    if temporal_bands_on:
+                        extra_log += (
+                            f"\n* Bande Temporali: intensita' {int(tb_intensity*100)}% "
+                            f"/ ampiezza {int(tb_ampiezza*100)}% / spostamento {int(tb_spostamento*100)}% "
+                            f"/ direzione {int(tb_direzione*100)}%"
+                        )
                 else:
                     # generate_dj_remix usa beat_times SOLO se
                     # beat_slice_mode=True (corretto, gia' un parametro
@@ -3723,6 +3842,16 @@ def main():
                         mod_matrix_fps=fps
                     )
                     mode_label = "VJ Mode"
+
+                    # --- Bande Temporali (Temporal Band Slicer) ---
+                    # Applicata SUBITO dopo la composizione del clip, prima
+                    # delle strisce selettive (Modulation Lab): meno step
+                    # incatenati sul .fl() precedente = minor rischio di
+                    # crash/instabilita' in fase di render.
+                    if temporal_bands_on:
+                        final = final.fl(lambda gf, t: apply_temporal_bands_clip(
+                            gf, t, tb_intensity, tb_ampiezza, tb_spostamento, tb_direzione))
+
                     if beat_slice_mode and beat_times:
                         _subdiv_lbl = next((m for m, v in MEASURE_FACTORS.items() if abs(v - beat_subdivision_factor) < 1e-9), "1/1")
                         _subdiv_str = {"fixed": _subdiv_lbl, "tempo_adaptive": "adattiva al tempo", "random_total": "random totale", "random_subset": "random in range"}.get(beat_subdivision_mode, _subdiv_lbl)
@@ -3758,6 +3887,12 @@ def main():
                                   if audio_mix_mode in ("mix", "mix_decomposed") else "") + "\n"
                                  f"* Reattivita' multi-banda: {'ON' if _vj_band_for_engine else 'OFF'}\n"
                                  f"* Formato: {formato_label}")
+                    if temporal_bands_on:
+                        extra_log += (
+                            f"\n* Bande Temporali: intensita' {int(tb_intensity*100)}% "
+                            f"/ ampiezza {int(tb_ampiezza*100)}% / spostamento {int(tb_spostamento*100)}% "
+                            f"/ direzione {int(tb_direzione*100)}%"
+                        )
 
                     # MODULATION LAB: prepara la sorgente per la striscia
                     # selettiva. Tre casi: (1) uno degli stessi video gia'

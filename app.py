@@ -2555,8 +2555,8 @@ def main():
                 if _fp < _freeze_prob_est:
                     _parts.append(f"probabilita' freeze ridotta da {int(_freeze_prob_est*100)}% a {int(_fp*100)}%")
                 st.info(
-                    f"ℹ️ Automatico: " + ", ".join(_parts) +
-                    f" per restare sotto la soglia di sicurezza RAM. "
+                    "ℹ️ Automatico: " + ", ".join(_parts) +
+                    " per restare sotto la soglia di sicurezza RAM. "
                     f"Oggetti stimati ~{_est_fragments} → ~{_est_fragments_adj}."
                 )
                 _est_fragments = _est_fragments_adj
@@ -2933,11 +2933,9 @@ def main():
                                 _pf[p0:p1, max(0, l0 - 2):l0] = [80, 40, 200]
                             if l1 < pw:
                                 _pf[p0:p1, l1:min(pw, l1 + 2)] = [80, 40, 200]
-                        _cap = "Frame iniziale (striscia selettiva disattivata)"
-                        if stripe_mod_on:
-                            _cap = ("Frame iniziale — banda = video dedicato caricato"
-                                    if _stripe_prev_frame is not None else
-                                    "Frame iniziale — banda viola = fallback (nessun video caricato)")
+                        # Nota: la caption per questa anteprima (banda 1) viene
+                        # calcolata e mostrata piu' sotto come _cap_2, insieme
+                        # all'immagine combinata banda1+banda2 (_pf_2 = _pf).
 
             st.markdown("---")
             if MODULATION_LAB_AVAILABLE:
